@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+data/tmp/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+session.session
+session
+.env
+config.ini
+tgshare
+.playwright-mcp/
+deploy/
+

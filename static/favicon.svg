@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#635bff"/>
+      <stop offset="0.55" stop-color="#00d4ff"/>
+      <stop offset="1" stop-color="#ff7eb3"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="9" fill="url(#g)"/>
+  <!-- "H" işareti (Hyaena) -->
+  <path d="M9 8v16" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+  <path d="M23 8v16" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+  <path d="M9 16h14" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+  <!-- sırtlan çizgili desen: alt köşede üç ince çizgi -->
+  <path d="M9 22.5h3M14 22.5h3M19 22.5h3" stroke="rgba(255,255,255,0.65)" stroke-width="1.4" stroke-linecap="round"/>
+</svg>

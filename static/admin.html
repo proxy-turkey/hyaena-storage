@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hyaena Storage — Admin</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="logo">
+    <div class="logo-mark">
+      <svg viewBox="0 0 32 32" width="20" height="20" aria-hidden="true">
+        <rect width="32" height="32" rx="9" fill="url(#lg)"/>
+        <path d="M9 8v16" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+        <path d="M23 8v16" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+        <path d="M9 16h14" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+        <path d="M9 22.5h3M14 22.5h3M19 22.5h3" stroke="rgba(255,255,255,0.65)" stroke-width="1.4" stroke-linecap="round"/>
+        <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#635bff"/><stop offset="0.55" stop-color="#00d4ff"/><stop offset="1" stop-color="#ff7eb3"/>
+        </linearGradient></defs>
+      </svg>
+    </div>
+    <span>Hyaena Storage — Admin</span>
+  </div>
+
+  <!-- Login -->
+  <div class="card admin-login hidden" id="login-view">
+    <h2>Yönetici girişi</h2>
+    <div class="sub">Depolama panelini görüntülemek için giriş yap</div>
+    <div class="url-row" style="margin-top:0">
+      <input type="password" id="login-pass" placeholder="Şifre" autocomplete="current-password">
+    </div>
+    <button class="btn btn-primary btn-block" id="login-btn" style="margin-top:14px">Giriş yap</button>
+    <div class="error hidden" id="login-error"></div>
+  </div>
+
+  <!-- Panel -->
+  <div id="panel-view" class="hidden" style="width:100%; max-width:1100px">
+    <div class="admin-nav">
+      <button data-tab="dashboard" class="active">📊 Panel</button>
+      <button data-tab="channels">📡 Kanallar</button>
+      <button data-tab="files">📁 Dosyalar</button>
+      <button data-tab="settings">🛠️ Ayarlar</button>
+      <button data-tab="logout" style="margin-left:auto; color:var(--danger)">Çıkış</button>
+    </div>
+
+    <!-- Dashboard -->
+    <div id="tab-dashboard" class="card admin-card">
+      <div class="cards-row" id="stat-cards"></div>
+      <div class="section-title">Depolama kullanımı</div>
+      <div class="progress-bar" style="height:14px">
+        <div class="progress-fill" id="usage-fill" style="width:0%"></div>
+      </div>
+      <div class="muted" style="margin-top:8px" id="usage-text"></div>
+    </div>
+
+    <!-- Kanallar -->
+    <div id="tab-channels" class="card admin-card wide hidden">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px">
+        <span class="section-title" style="margin:0">Kanal filosu</span>
+        <button class="btn btn-primary" id="create-channel-btn">+ Kanal oluştur</button>
+      </div>
+      <div class="muted" style="margin-bottom:12px" id="channel-hint"></div>
+      <table>
+        <thead><tr><th>#</th><th>Başlık</th><th>Telegram ID</th><th>Oluşturulma</th></tr></thead>
+        <tbody id="channels-tbody"></tbody>
+      </table>
+    </div>
+
+    <!-- Dosyalar -->
+    <div id="tab-files" class="card admin-card wide hidden">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px">
+        <span class="section-title" style="margin:0">Dosyalar</span>
+        <span class="muted" id="files-count"></span>
+      </div>
+      <table>
+        <thead><tr><th>Dosya</th><th>Boyut</th><th>Tarih</th><th>Parça</th><th>Durum</th><th>İşlem</th></tr></thead>
+        <tbody id="files-tbody"></tbody>
+      </table>
+      <div style="display:flex; gap:10px; margin-top:16px; justify-content:flex-end">
+        <button class="btn btn-ghost" id="files-prev">← Önceki</button>
+        <button class="btn btn-ghost" id="files-next">Sonraki →</button>
+      </div>
+    </div>
+
+    <!-- Ayarlar -->
+    <div id="tab-settings" class="card admin-card hidden">
+      <div class="section-title">Yapılandırma</div>
+      <table>
+        <tbody id="settings-tbody"></tbody>
+      </table>
+      <div class="muted" style="margin-top:14px">
+        Değiştirmek için <code>.env</code> dosyasını düzenleyip servisi yeniden başlat.
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>

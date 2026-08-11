@@ -1,0 +1,9 @@
+[telegram]
+# my.telegram.org -> API development tools sayfasindan al
+# GERÇEK kimlik bilgilerini config.ini'ye koy (bu dosya sadece şablon)
+api_id = YOUR_API_ID
+api_hash = YOUR_API_HASH
+
+[options]
+# Iki dogrulamali login (istege bagli, onerilir)
+two_fa_password =
