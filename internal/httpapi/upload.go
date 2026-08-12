@@ -233,11 +233,16 @@ func (sv *Server) uploadFinish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tmpDir := sv.fileTmpDir(token)
+	// Herhangi bir hata yolu tmp'yi temizlesin (volume asla dolmasın)
+	cleanupOnErr := func(status int, detail string) {
+		cleanupTmp(tmpDir)
+		writeErr(w, status, detail)
+	}
 	segments := make([]string, 0, f.PartCount)
 	for i := 0; i < f.PartCount; i++ {
 		p := segmentPath(tmpDir, i)
 		if _, err := os.Stat(p); err != nil {
-			writeErr(w, http.StatusBadRequest, fmt.Sprintf("Parça %d eksik", i))
+			cleanupOnErr(http.StatusBadRequest, fmt.Sprintf("Parça %d eksik", i))
 			return
 		}
 		segments = append(segments, p)
@@ -245,11 +250,11 @@ func (sv *Server) uploadFinish(w http.ResponseWriter, r *http.Request) {
 
 	chs, err := sv.store.ListChannels()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "Kanal listesi okunamadı")
+		cleanupOnErr(http.StatusInternalServerError, "Kanal listesi okunamadı")
 		return
 	}
 	if len(chs) == 0 {
-		writeErr(w, http.StatusServiceUnavailable, "Depolama kanalı yok")
+		cleanupOnErr(http.StatusServiceUnavailable, "Depolama kanalı yok")
 		return
 	}
 	channelIDs := make([]int64, len(chs))
@@ -258,11 +263,12 @@ func (sv *Server) uploadFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	plan, err := sv.store.PickUploadChannelsBalanced(channelIDs, f.PartCount)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "Kanal dağıtımı hesaplanamadı")
+		cleanupOnErr(http.StatusInternalServerError, "Kanal dağıtımı hesaplanamadı")
 		return
 	}
 
 	if !sv.waitWorker(w, r) {
+		cleanupTmp(tmpDir)
 		return
 	}
 	go func() {

@@ -55,8 +55,11 @@ func Start(hour int, tw *tgworker.Service, store *storage.Store, tmpRoot string)
 	return c
 }
 
-// sweepTmp, geçici upload dizinlerini temizler (DB'de kaydı olmayanları siler).
-// Volume'un gereksiz parça kalıntılarıyla dolmasını önler.
+// sweepTmp, geçici upload dizinlerini temizler (volume asla dolmasın).
+// Kural:
+//  1. DB'de kaydı olmayan token dizinleri (silinen dosyanın kalıntısı)
+//  2. DB kaydı 'uploading' ama dizini eski (yarım kalmış upload) — >24 saat
+//  3. DB kaydı 'uploading' ama tmp dizini hiç yoksa (terk edilmiş) — kaydı da sil
 func sweepTmp(ctx context.Context, tmpRoot string, store *storage.Store) {
 	entries, err := os.ReadDir(tmpRoot)
 	if err != nil {
@@ -69,10 +72,23 @@ func sweepTmp(ctx context.Context, tmpRoot string, store *storage.Store) {
 		if !core.ValidShareToken(e.Name()) {
 			continue // session gibi token-olmayan dizinlere dokunma
 		}
+		dirPath := filepath.Join(tmpRoot, e.Name())
 		f, _ := store.GetFileByToken(e.Name())
+
 		if f == nil {
-			_ = os.RemoveAll(filepath.Join(tmpRoot, e.Name()))
+			// DB'de kayıt yok → kalıntı, sil
+			_ = os.RemoveAll(dirPath)
 			log.Printf("Sahipsiz tmp dizini temizlendi: %s", e.Name())
+			continue
+		}
+
+		// DB'de 'uploading' durumunda ama eski → yarım kalmış upload, temizle
+		if f.Status == "uploading" {
+			if fi, err := e.Info(); err == nil && time.Since(fi.ModTime()) > 24*time.Hour {
+				_ = os.RemoveAll(dirPath)
+				_ = store.DeleteFile(f.ID)
+				log.Printf("Yarım kalmış upload temizlendi: %s (%s)", f.OriginalName, e.Name())
+			}
 		}
 	}
 }
