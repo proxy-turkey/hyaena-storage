@@ -47,6 +47,7 @@ func New(ctx context.Context, s *config.Settings, store *storage.Store, tw tgwor
 	r.Use(middleware.RealIP)
 
 	r.Get("/health", sv.health)
+	r.Get("/bandwidth", sv.bandwidthPage)
 	r.Get("/", sv.index)
 	r.Get("/admin", sv.adminPage)
 

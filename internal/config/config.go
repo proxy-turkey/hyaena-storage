@@ -43,6 +43,11 @@ type Settings struct {
 	CFAPIKey  string
 	CFAPIEmail string
 
+	// Northflank metrics (egress izleme)
+	NFToken     string
+	NFProject   string
+	NFService   string
+
 	// türetilmiş
 	ProjectRoot string
 }
@@ -221,6 +226,9 @@ func Load(root string) (*Settings, error) {
 	s.CFZoneID = getStr("CF_ZONE_ID", "", "")
 	s.CFAPIKey = getStr("CF_API_KEY", "", "")
 	s.CFAPIEmail = getStr("CF_API_EMAIL", "", "")
+	s.NFToken = getStr("NORTHFLANK_TOKEN", "", "")
+	s.NFProject = getStr("NORTHFLANK_PROJECT", "hyaena", "")
+	s.NFService = getStr("NORTHFLANK_SERVICE", "hyaena-storage", "")
 
 	return s, nil
 }
