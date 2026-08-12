@@ -69,6 +69,8 @@ type bandwidthData struct {
 func (sv *Server) collectBandwidth() bandwidthData {
 	d := bandwidthData{LimitGB: 10, FetchedAt: time.Now().UTC().Format("2006-01-02 15:04:05"), Project: sv.s.NFProject, Service: sv.s.NFService}
 
+	// Toplam kullanım: bandwidthVolume (kb). Cloudflare bypass aktifken bu ~0
+	// olur (origin'e egress gitmiyor) — bu beklenen ve istenen davranış.
 	vol, volErr := sv.northflankMetrics("bandwidthVolume")
 	if volErr == nil {
 		if md, ok := vol["bandwidthVolume"]; ok {
@@ -82,13 +84,16 @@ func (sv *Server) collectBandwidth() bandwidthData {
 		d.VolErr = volErr.Error()
 	}
 
+	// Anlık egress hızı: networkEgress (kbps). Tüm container'ların EN SON
+	// değerlerinin toplamı (önceki kod sadece son container'ın son değerini
+	// alıyordu — diğer container'ların hızı yok sayılıyordu).
 	egr, egrErr := sv.northflankMetrics("networkEgress")
 	if egrErr == nil {
 		if md, ok := egr["networkEgress"]; ok {
 			latest := 0.0
 			for _, c := range md.Values {
 				if len(c.Data) > 0 {
-					latest = c.Data[len(c.Data)-1].Value
+					latest += c.Data[len(c.Data)-1].Value
 				}
 			}
 			d.LatestKbps = latest
@@ -144,6 +149,11 @@ func renderBandwidthHTML(d bandwidthData) string {
 	}
 	if d.EgrErr != "" {
 		errHTML += fmt.Sprintf(`<div class="err">⚠ Hız hatası: %s</div>`, d.EgrErr)
+	}
+	// Cloudflare bypass aktifken toplam ~0 kalır — kullanıcı bunu "çalışmıyor"
+	// sanmasın. İndirilen trafik Cloudflare edge cache'inden servis edilir.
+	if d.TotalGB < 0.001 && d.LatestKbps > 0 {
+		errHTML += `<div class="err" style="color:var(--dim)">ℹ Egress bypass aktif — indirilen trafik Cloudflare edge cache'inden servis ediliyor, Northflank origin'e neredeyse hiç egress gitmiyor. Toplam bu yüzden ~0.</div>`
 	}
 
 	return `<!DOCTYPE html>
