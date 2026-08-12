@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -192,10 +193,15 @@ func TestUploadFlow(t *testing.T) {
 	var startResp struct {
 		Token      string `json:"token"`
 		PartCount  int    `json:"part_count"`
+		Name       string `json:"name"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &startResp)
 	if startResp.Token == "" || startResp.PartCount != 1 {
 		t.Fatalf("start yanıtı yanlış: %s", rec.Body.String())
+	}
+	// temizlenmiş ad dönmeli (özel karakterli isimde olduğu gibi)
+	if startResp.Name != "test.bin" {
+		t.Errorf("start name = %q, want %q", startResp.Name, "test.bin")
 	}
 
 	// parça yükle
@@ -228,6 +234,66 @@ func TestUploadFlow(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &stResp)
 	if stResp.Status != "uploading" {
 		t.Errorf("status = %s, want uploading", stResp.Status)
+	}
+}
+
+func TestUploadStartSanitizesAndRoundtrip(t *testing.T) {
+	// Özel karakterli/boşluklu isim: start temizlenmiş adı döndürür,
+	// download o adla eşleşir (ham adla 404 kök nedeninin fixi).
+	root := t.TempDir()
+	cfg := config.Defaults()
+	cfg.AdminPassword = "test-pass"
+	cfg.DatabaseURL = testDBURL()
+	cfg.TmpRoot = filepath.Join(root, "data", "tmp")
+	store, _ := storage.Open(cfg.DBFile())
+	defer store.Close()
+	store.CreateChannel(-1001, 111, "Kanal", "2026-08-11")
+	sw := &stubWorker{ready: make(chan struct{})}
+	sw.markReady()
+	handler := New(context.Background(), cfg, store, sw, emptyFS{})
+
+	// agresif ASCII: boşluk→_, Türkçe→ASCII, # silinir
+	body := `{"name":"hoş #rapor?.pdf","size":100,"mime":"application/pdf"}`
+	rec := doReq(t, handler, "POST", "/api/upload/start", strings.NewReader(body), nil)
+	if rec.Code != 200 {
+		t.Fatalf("start = %d: %s", rec.Code, rec.Body.String())
+	}
+	var startResp struct {
+		Token string `json:"token"`
+		Name  string `json:"name"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &startResp)
+	wantName := "hos_rapor_.pdf"
+	if startResp.Name != wantName {
+		t.Fatalf("sanitize edilen ad = %q, want %q", startResp.Name, wantName)
+	}
+
+	// dosyayı hazır hale getir (stub worker Telegram yapmadığı için elle):
+	// parça kayıtlarını uploaded + dosyayı ready yap.
+	f, _ := store.GetFileByToken(startResp.Token)
+	chID, _ := store.ListChannels()
+	msgID := 501
+	dc := 1
+	blob := []byte("ref")
+	if err := store.AddPart(f.ID, 0, &chID[0].ID, &msgID, blob, 100, &dc); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateFileStatus(f.ID, "ready", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// temizlenen adla download → 200 (boşluk ve özel karakterler PathEscape edilmeli)
+	rec = doReq(t, handler, "GET",
+		"/api/download/"+startResp.Token+"/"+url.PathEscape(startResp.Name), nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("download(sanitized) = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	// ham isimle download → 404 (isim eşleşmez)
+	rec = doReq(t, handler, "GET",
+		"/api/download/"+startResp.Token+"/"+url.PathEscape("hoş #rapor?.pdf"), nil, nil)
+	if rec.Code != 404 {
+		t.Fatalf("download(raw) = %d, want 404", rec.Code)
 	}
 }
 

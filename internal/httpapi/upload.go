@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -75,8 +76,8 @@ func (sv *Server) uploadStart(w http.ResponseWriter, r *http.Request) {
 	}
 	name := core.SanitizeFilename(body.Name)
 	size := body.Size
-	if size <= 0 {
-		writeErr(w, http.StatusBadRequest, "Boş dosya olamaz")
+	if size < 0 {
+		writeErr(w, http.StatusBadRequest, "Geçersiz boyut")
 		return
 	}
 	if size > sv.s.MaxUploadBytes {
@@ -91,10 +92,8 @@ func (sv *Server) uploadStart(w http.ResponseWriter, r *http.Request) {
 		mime = mime[:200]
 	}
 
-	// kanal filosu hazır mı?
-	if sv.tw != nil {
-		go func() { _ = sv.tw.EnsureFleet(sv.ctx) }()
-	}
+	// kanal filosu hazır mı? (tek seferlik arka plan garantisi)
+	sv.ensureFleet()
 	chs, err := sv.store.ListChannels()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "Kanal listesi okunamadı")
@@ -124,10 +123,13 @@ func (sv *Server) uploadStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"token":           token,
-		"segment_bytes":   sv.s.SegmentBytes,
-		"part_count":      pc,
+		"token":            token,
+		"segment_bytes":    sv.s.SegmentBytes,
+		"part_count":       pc,
 		"max_upload_bytes": sv.s.MaxUploadBytes,
+		// Temizlenmiş ad: frontend linki/görüntüyü bu adla kurmalı (yoksa
+		// ham ad depolanan adla eşleşmez → indirme 404).
+		"name": name,
 	})
 }
 
@@ -271,9 +273,9 @@ func (sv *Server) uploadFinish(w http.ResponseWriter, r *http.Request) {
 		cleanupTmp(tmpDir)
 		return
 	}
-	go func() {
-		_ = sv.tw.UploadSegments(sv.ctx, f.ID, tmpDir, segments, plan, f.Mime)
-	}()
+	// Arka plan upload'ı güvenli sarmalayıcıyla başlat: panic process'i
+	// çökertmesin ve hata dosyayı 'uploading'de takılı bırakmasın.
+	go sv.uploadSegmentsSafe(f.ID, tmpDir, segments, plan, f.Mime)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
 }
@@ -328,4 +330,26 @@ func (sv *Server) uploadCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	cleanupTmp(sv.fileTmpDir(token))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
+
+// uploadSegmentsSafe, arka plan Telegram upload'ını panic-korumalı ve
+// hata-bilinçli çalıştırır. Panic process'i çökertmesin (Recoverer kapsamaz),
+// erken hata dosyayı 'uploading'de takılı bırakmasın.
+func (sv *Server) uploadSegmentsSafe(fileID int64, tmpDir string, segments []string, plan []int64, mime string) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("Upload goroutine panic (file=%d): %v", fileID, rec)
+			if f, err := sv.store.GetFileByID(fileID); err == nil && f != nil && f.Status == "uploading" {
+				_ = sv.store.SetFileFailed(fileID, "iç hata")
+			}
+		}
+	}()
+	if err := sv.tw.UploadSegments(sv.ctx, fileID, tmpDir, segments, plan, mime); err != nil {
+		// UploadSegments içeride parça hatasında SetFileFailed yapar; buraya
+		// sadece çok-erken hatalar (apiGuard, kanal yok) düşer.
+		log.Printf("Telegram upload hatası (file=%d): %v", fileID, err)
+		if f, gerr := sv.store.GetFileByID(fileID); gerr == nil && f != nil && f.Status == "uploading" {
+			_ = sv.store.SetFileFailed(fileID, err.Error())
+		}
+	}
 }

@@ -70,7 +70,12 @@ func (s *Service) UploadSegments(ctx context.Context, fileID int64, tmpDir strin
 		_ = s.db.BumpDoneParts(fileID)
 
 		if i < len(segmentPaths)-1 {
-			time.Sleep(time.Duration(s.s.InterMessageSleep * float64(time.Second)))
+			// Context iptalini de dinle (kapanışta tam bekleme süresi harcanmasın).
+			select {
+			case <-time.After(time.Duration(s.s.InterMessageSleep * float64(time.Second))):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 	}
 

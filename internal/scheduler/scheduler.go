@@ -73,7 +73,11 @@ func sweepTmp(ctx context.Context, tmpRoot string, store *storage.Store) {
 			continue // session gibi token-olmayan dizinlere dokunma
 		}
 		dirPath := filepath.Join(tmpRoot, e.Name())
-		f, _ := store.GetFileByToken(e.Name())
+		f, err := store.GetFileByToken(e.Name())
+		if err != nil {
+			// DB hatası → dizini silme (aktif upload'un tmp'si kaybolmasın)
+			continue
+		}
 
 		if f == nil {
 			// DB'de kayıt yok → kalıntı, sil

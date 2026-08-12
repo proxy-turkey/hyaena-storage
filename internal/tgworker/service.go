@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/session"
@@ -36,7 +37,10 @@ type Service struct {
 	runCtx    context.Context
 	readyCh   chan struct{}
 	readyOnce sync.Once
-	loginErr  error
+
+	// loginErr: atomic değer — Run goroutine'inde yazılır, WaitReady/apiGuard'da
+	// farklı goroutine'den okunur (data race önlenir).
+	loginErr atomic.Value // error
 
 	// pendingCode, LoginOnce(LoginArgs) ile verilen tek seferlik kod.
 	pendingCode string
@@ -63,13 +67,26 @@ func (s *Service) Ready() <-chan struct{} { return s.readyCh }
 func (s *Service) WaitReady(ctx context.Context) error {
 	select {
 	case <-s.readyCh:
-		if s.loginErr != nil {
-			return s.loginErr
+		if err := s.getLoginErr(); err != nil {
+			return err
 		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// setLoginErr, login hatasını atomik kaydeder.
+func (s *Service) setLoginErr(err error) {
+	s.loginErr.Store(err)
+}
+
+// getLoginErr, atomik login hatasını döndürür.
+func (s *Service) getLoginErr() error {
+	if v := s.loginErr.Load(); v != nil {
+		return v.(error)
+	}
+	return nil
 }
 
 // Run, Telegram client'ı başlatır. Blokar — goroutine içinde çağrılmalı.
@@ -86,7 +103,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.runCtx = ctx
 		if err := s.loginIfNeeded(ctx); err != nil {
 			s.readyOnce.Do(func() {
-				s.loginErr = fmt.Errorf("Telegram girişi başarısız: %w", err)
+				s.setLoginErr(fmt.Errorf("Telegram girişi başarısız: %w", err))
 				close(s.readyCh)
 			})
 			return err
@@ -120,8 +137,8 @@ func (s *Service) GetMe(ctx context.Context) (map[string]string, error) {
 func (s *Service) apiGuard(ctx context.Context) error {
 	select {
 	case <-s.readyCh:
-		if s.loginErr != nil {
-			return s.loginErr
+		if err := s.getLoginErr(); err != nil {
+			return err
 		}
 	case <-ctx.Done():
 		return ctx.Err()

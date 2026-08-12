@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -106,6 +107,11 @@ func (sv *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Toplam boyut biliniyorsa Content-Length set et: parça kaybı durumunda
+	// tarayıcı kesik dosyayı algılar (başarısız 200 yerine).
+	if f.Size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(f.Size, 10))
+	}
 	// Video/resim/audio/PDF gibi inline gösterilebilen tipler tarayıcıda açılır;
 	// diğerleri indirilir (attachment).
 	disposition := "attachment"

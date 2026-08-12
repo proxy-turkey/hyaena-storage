@@ -176,7 +176,11 @@ func sweepOrphanTmp(tmpRoot string, store *storage.Store, maxAge time.Duration) 
 		remove := false
 		// DB'de kaydı var mı?
 		if store != nil {
-			f, _ := store.GetFileByToken(e.Name())
+			f, err := store.GetFileByToken(e.Name())
+			if err != nil {
+				// DB hatası → dizini silme (aktif upload'un tmp'si yanlışlıkla kaybolmasın)
+				continue
+			}
 			if f == nil {
 				remove = true // DB'de yok → kalıntı
 			}

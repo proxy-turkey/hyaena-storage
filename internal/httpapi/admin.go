@@ -1,9 +1,10 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"crypto/subtle"
+	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -25,6 +26,7 @@ func (sv *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    tok,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   sv.s.TokenTTLHours * 3600,
 	})
@@ -138,7 +140,8 @@ func (sv *Server) adminFiles(w http.ResponseWriter, r *http.Request) {
 			"created_at":    f.CreatedAt,
 			"ready_at":      f.ReadyAt,
 			"parts":         partList,
-			"download_url":  "/api/download/" + f.Token + "/" + f.OriginalName,
+			// Boşluk/#/özel karakter içeren adlar linki kırmasın diye URL-encode edilir.
+			"download_url":  "/api/download/" + f.Token + "/" + url.PathEscape(f.OriginalName),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": out, "total": total})
@@ -169,11 +172,17 @@ func (sv *Server) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = sv.store.DeleteFile(f.ID)
 	cleanupTmp(sv.fileTmpDir(token))
-	// Cloudflare Worker edge cache'ini temizle (silinen dosya erişilebilir kalmasın)
+	// Cloudflare edge cache'ini temizle (silinen dosya erişilebilir kalmasın).
+	// Admin yanıtını bekletmesin — purge arka planda yapılır.
 	if sv.s.CFZoneID != "" && sv.s.CFAPIKey != "" {
 		base := "https://storage.hyaena.co.uk"
-		sv.purgeCacheFile(base + "/api/download/" + token + "/" + f.OriginalName)
-		sv.purgeCacheFile(base + "/api/download/" + token)
+		// İsim URL-encode edilir (açık purge isteğinin aynısı olmalı).
+		u1 := base + "/api/download/" + token + "/" + url.PathEscape(f.OriginalName)
+		u2 := base + "/api/download/" + token
+		go func() {
+			sv.purgeCacheFile(u1)
+			sv.purgeCacheFile(u2)
+		}()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "parts_deleted": len(parts)})
 }

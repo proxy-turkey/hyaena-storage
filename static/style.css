@@ -329,6 +329,83 @@ body::after {
 }
 .link-box input:focus { border-color: var(--brand); }
 
+/* ================= BULK: KUYRUK LİSTESİ ================= */
+.queue-box {
+  margin-top: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 6px;
+}
+.queue-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  padding: 8px 10px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.queue-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+.queue-row:hover { background: var(--surface-hover); }
+.queue-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.queue-row-status { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.q-wait { color: var(--text-faint); }
+.q-upload { color: var(--brand-2); }
+.q-done { color: var(--ok); }
+.q-fail { color: var(--danger); }
+
+/* ================= BULK: SONUÇ LİSTESİ ================= */
+.res-links { margin-top: 14px; text-align: left; }
+.res-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.res-row-name {
+  flex: 0 0 38%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 13px;
+}
+.res-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+.res-row input:focus { border-color: var(--brand); }
+.res-row .btn { padding: 8px 14px; font-size: 12.5px; }
+
 /* ================= HATA / TOAST ================= */
 .error {
   margin-top: 16px;

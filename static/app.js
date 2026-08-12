@@ -1,11 +1,16 @@
-/* Hyaena Storage — upload sayfası mantığı */
+/* Hyaena Storage — upload sayfası mantığı (bulk: sınırlı paralel kuyruk) */
 (function () {
   "use strict";
 
   const $ = (id) => document.getElementById(id);
   const dropzone = $("dropzone");
   const fileInput = $("file-input");
-  let current = null; // { file, token, partCount, segmentBytes, xhr }
+
+  // Kuyruk: aynı anda en fazla MAX_CONCURRENT dosya yüklenir.
+  const MAX_CONCURRENT = 2;
+  let queue = []; // { file, status:'waiting'|'uploading'|'done'|'failed', token, safeName, partCount, segmentBytes, xhr, error }
+  let activeCount = 0;
+  let cancelled = false;
 
   function fmt(bytes) {
     if (bytes === 0) return "0 B";
@@ -32,89 +37,133 @@
     clearError();
   }
 
-  // ---------- Dosya seçimi ----------
-  function pickFile(file) {
-    if (!file) return;
-    if (current && current.status === "uploading") return;
+  // ---------- Kuyruk ----------
+  function enqueueFiles(fileList) {
+    if (!fileList || !fileList.length) return;
     clearError();
-    current = { file };
+    const items = Array.from(fileList).map((f) => ({ file: f, status: "waiting" }));
+    queue = queue.concat(items);
+    cancelled = false;
+    stage("progress");
+    renderQueue();
+    pump();
+  }
 
-    // start: token + segment bilgisi al
-    fetch("/api/upload/start", {
+  // Dosyaları MAX_CONCURRENT'ı aşmayacak şekilde başlat.
+  function pump() {
+    if (cancelled) return;
+    while (activeCount < MAX_CONCURRENT) {
+      const item = queue.find((q) => q.status === "waiting");
+      if (!item) break;
+      item.status = "uploading";
+      activeCount++;
+      uploadOne(item);
+    }
+    renderQueue();
+    // hepsi bitti mi?
+    if (activeCount === 0) {
+      const anyDone = queue.some((q) => q.status === "done");
+      const allTerminal = queue.every((q) => q.status === "done" || q.status === "failed");
+      if (queue.length && allTerminal) {
+        if (anyDone) showResult();
+        else { stage("pick"); showError("Hiçbir dosya yüklenemedi."); queue = []; }
+      }
+    }
+  }
+
+  function itemDone(item) {
+    activeCount = Math.max(0, activeCount - 1);
+    renderQueue();
+    pump();
+  }
+
+  // ---------- Tek dosya upload akışı ----------
+  function uploadOne(item) {
+    const f = item.file;
+    // Sunucu temizlenmiş adı döndürür; link/görüntü bu adla kurulur (ham ad 404 yapar).
+    item.safeName = f.name;
+    const startBody = {
+      name: f.name,
+      size: f.size,
+      mime: f.type || "application/octet-stream",
+      expires_in_hours: currentExpiry(),
+    };
+
+    fetchWithRetry("/api/upload/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: file.name,
-        size: file.size,
-        mime: file.type || "application/octet-stream",
-        expires_in_hours: currentExpiry(),
-      }),
+      body: JSON.stringify(startBody),
     })
       .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {
         if (!ok) throw new Error(d.detail || "Upload başlatılamadı");
-        current.token = d.token;
-        current.partCount = d.part_count;
-        current.segmentBytes = d.segment_bytes;
-        stage("progress");
-        $("up-name").textContent = file.name;
-        $("up-size").textContent = fmt(file.size);
-        uploadParts();
+        item.token = d.token;
+        item.partCount = d.part_count;
+        item.segmentBytes = d.segment_bytes;
+        if (d.name) item.safeName = d.name;
+        renderQueue();
+        return uploadParts(item);
       })
+      .then(() => finishUpload(item))
       .catch((e) => {
-        stage("pick");
-        showError(e.message);
-        current = null;
+        item.status = "failed";
+        item.error = e.message;
+        renderQueue();
+        itemDone(item);
       });
   }
 
-  // ---------- Parça yükleme (sıralı XHR) ----------
-  function uploadParts() {
-    const f = current.file;
-    let idx = 0;
-
-    const next = () => {
-      if (idx >= current.partCount) {
-        setP1(100);
-        finishUpload();
-        return;
-      }
-      const start = idx * current.segmentBytes;
-      const end = Math.min(start + current.segmentBytes, f.size);
-      const blob = f.slice(start, end);
-      const xhr = new XMLHttpRequest();
-      current.xhr = xhr;
-
-      xhr.open("POST", `/api/upload/${current.token}/parts/${idx}`);
-      xhr.setRequestHeader("Content-Type", "application/octet-stream");
-      xhr.onload = () => {
-        if (xhr.status !== 200) {
-          showError(`Parça ${idx + 1} yüklenemedi (${xhr.status})`);
-          current.status = "error";
+  // Parça yükleme (sıralı XHR) — item'a özel.
+  function uploadParts(item) {
+    return new Promise((resolve, reject) => {
+      const f = item.file;
+      let idx = 0;
+      const next = () => {
+        if (cancelled) {
+          reject(new Error("iptal edildi"));
           return;
         }
-        idx++;
-        next();
-      };
-      xhr.onerror = () => {
-        showError("Ağ hatası: sunucuya ulaşılamadı.");
-        current.status = "error";
-      };
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const partPct = e.loaded / e.total;
-          const overall = ((idx + partPct) / current.partCount) * 100;
-          setP1(overall);
+        if (idx >= item.partCount) {
+          setP1(100);
+          resolve();
+          return;
         }
+        const start = idx * item.segmentBytes;
+        const end = Math.min(start + item.segmentBytes, f.size);
+        const blob = f.slice(start, end);
+        const xhr = new XMLHttpRequest();
+        item.xhr = xhr;
+        xhr.open("POST", `/api/upload/${item.token}/parts/${idx}`);
+        xhr.setRequestHeader("Content-Type", "application/octet-stream");
+        xhr.onload = () => {
+          if (xhr.status !== 200) {
+            reject(new Error(`Parça ${idx + 1} yüklenemedi (${xhr.status})`));
+            return;
+          }
+          idx++;
+          next();
+        };
+        xhr.onerror = () => reject(new Error("Ağ hatası: sunucuya ulaşılamadı."));
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const partPct = e.loaded / e.total;
+            const overall = ((idx + partPct) / item.partCount) * 100;
+            setP1(overall);
+          }
+        };
+        xhr.send(blob);
       };
-      xhr.send(blob);
-    };
-    next();
+      next();
+    });
   }
 
   function setP1(pct) {
     $("p1-fill").style.width = pct + "%";
     $("p1-pct").textContent = Math.round(pct) + "%";
+  }
+  function setP2(pct) {
+    $("p2-fill").style.width = pct + "%";
+    $("p2-pct").textContent = pct < 0 ? "—" : Math.round(pct) + "%";
   }
 
   // Seçili süreyi saat cinsinden döndürür (0 = süresiz)
@@ -123,79 +172,120 @@
     if (!el) return 0;
     return parseInt(el.value, 10) || 0;
   }
-  function setP2(pct) {
-    $("p2-fill").style.width = pct + "%";
-    $("p2-pct").textContent = pct < 0 ? "—" : Math.round(pct) + "%";
-  }
 
   // ---------- Bitiş + Telegram polling ----------
-  function finishUpload() {
+  function finishUpload(item) {
     $("p1-label").textContent = "Sunucuya gönderildi ✓";
     $("p2-label").textContent = "Buluta dağıtılıyor...";
-
-    fetch(`/api/upload/${current.token}/finish`, { method: "POST" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.status !== "started" && !r.ok) {
+    return fetchWithRetry(`/api/upload/${item.token}/finish`, { method: "POST" })
+      .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (d.status !== "started" && !ok) {
           throw new Error(d.detail || "Dağıtım başlatılamadı");
         }
-        pollStatus();
-      })
-      .catch((e) => {
-        showError(e.message);
-        current.status = "error";
+        return pollStatus(item);
       });
   }
 
-  function pollStatus() {
-    fetch(`/api/upload/${current.token}/status`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.status === "ready") {
-          setP2(100);
-          $("p2-label").textContent = "Buluta dağıtıldı ✓";
-          if (!current.file.size && d.received_bytes) current.file.size = d.received_bytes;
-          showResult();
-          return;
-        }
-        if (d.status === "failed") {
-          showError("Dağıtım başarısız: " + (d.error || "bilinmeyen hata"));
-          current.status = "error";
-          return;
-        }
-        const pct = d.part_count > 0 ? (d.done_parts / d.part_count) * 100 : 0;
-        setP2(pct);
-        setTimeout(pollStatus, 1000);
-      })
-      .catch((e) => {
-        showError("Durum alınamadı: " + e.message);
-        setTimeout(pollStatus, 1500);
-      });
+  function pollStatus(item) {
+    return new Promise((resolve, reject) => {
+      const tick = () => {
+        fetch(`/api/upload/${item.token}/status`)
+          .then((r) => r.json())
+          .then((d) => {
+            if (cancelled) {
+              reject(new Error("iptal edildi"));
+              return;
+            }
+            if (d.status === "ready") {
+              setP2(100);
+              $("p2-label").textContent = "Buluta dağıtıldı ✓";
+              item.status = "done";
+              item.link = `${location.origin}/api/download/${item.token}/${encodeURIComponent(item.safeName)}`;
+              renderQueue();
+              itemDone(item);
+              resolve();
+              return;
+            }
+            if (d.status === "failed") {
+              reject(new Error(d.error || "bilinmeyen hata"));
+              return;
+            }
+            const pct = d.part_count > 0 ? (d.done_parts / d.part_count) * 100 : 0;
+            setP2(pct);
+            setTimeout(tick, 1000);
+          })
+          .catch((e) => {
+            if (cancelled) return;
+            setTimeout(tick, 1500);
+          });
+      };
+      tick();
+    });
+  }
+
+  // ---------- 429 retry: bulk büyük batch'lerde upload/start rate-limit'e takılır ----------
+  function fetchWithRetry(url, opts, attempts) {
+    attempts = attempts || 0;
+    return fetch(url, opts).then((r) => {
+      if (r.status === 429 && attempts < 5) {
+        const wait = 2000 + attempts * 2000; // 2s,4s,6s,8s,10s
+        return new Promise((res) => setTimeout(res, wait)).then(() =>
+          fetchWithRetry(url, opts, attempts + 1)
+        );
+      }
+      return r;
+    });
   }
 
   function showResult() {
     stage("result");
-    $("res-name").textContent = current.file.name;
-    $("res-size").textContent = current.file.size ? fmt(current.file.size) : "";
-    // süre rozeti: süreli dosyalarda "Kalıcı" yerine seçilen süre
-    const badge = document.querySelector(".badge");
-    if (badge) {
-      const exp = currentExpiry();
-      badge.textContent = exp ? expiryLabel(exp) : "Kalıcı";
-    }
-    const link = `${location.origin}/api/download/${current.token}/${encodeURIComponent(current.file.name)}`;
-    $("res-link").value = link;
+    const done = queue.filter((q) => q.status === "done");
+    $("res-count").textContent =
+      done.length + (done.length === 1 ? " dosya hazır" : " dosya hazır");
+    const list = $("res-links");
+    list.innerHTML = "";
+    done.forEach((item, i) => {
+      const row = document.createElement("div");
+      row.className = "res-row";
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "res-row-name";
+      nameSpan.textContent = item.safeName;
+      nameSpan.title = item.safeName;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = item.link;
+      input.readOnly = true;
+      const btn = document.createElement("button");
+      btn.className = "btn btn-ghost";
+      btn.textContent = "Kopyala";
+      btn.addEventListener("click", () => copyText(item.link));
+      row.appendChild(nameSpan);
+      row.appendChild(input);
+      row.appendChild(btn);
+      list.appendChild(row);
+    });
   }
 
-  // Saat değerini okunur etikete çevirir
-  function expiryLabel(hours) {
-    const map = { 1: "1 Saat", 24: "1 Gün", 168: "1 Hafta", 720: "1 Ay" };
-    return map[hours] || "Kalıcı";
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("Bağlantı kopyalandı!");
+    } catch (e) {
+      const el = document.createElement("textarea");
+      el.value = text;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand("copy");
+      el.remove();
+      toast("Bağlantı kopyalandı!");
+    }
   }
 
   // ---------- Ctrl+V ile panodan yapıştırma ----------
   document.addEventListener("paste", (e) => {
     const items = (e.clipboardData && e.clipboardData.items) || [];
+    const files = [];
     for (const item of items) {
       if (item.kind === "file") {
         const file = item.getAsFile();
@@ -204,18 +294,17 @@
           // Ekran görüntüsü/panodan resim: isim yoksa üret
           if (!file.name || file.name === "image.png") {
             const ext = (file.type === "image/png" ? "png" : file.type.split("/")[1] || "bin");
-            const renamed = new File([file], `Yapistirilan-${Date.now()}.${ext}`, { type: file.type });
-            pickFile(renamed);
+            files.push(new File([file], `Yapistirilan-${Date.now()}.${ext}`, { type: file.type }));
           } else {
-            pickFile(file);
+            files.push(file);
           }
-          return;
         }
       }
     }
+    if (files.length) enqueueFiles(files);
   });
 
-  // ---------- URL ile upload ----------
+  // ---------- URL ile upload (tek öğeli kuyruk) ----------
   $("url-btn").addEventListener("click", () => {
     const url = $("url-input").value.trim();
     if (!url) return;
@@ -235,6 +324,11 @@
     $("p1-label").textContent = "Sunucu indiriyor";
     $("p2-label").textContent = "Buluta dağıtılıyor...";
 
+    const item = { file: { name: url }, status: "uploading", safeName: url };
+    queue = [item];
+    activeCount = 1;
+    cancelled = false;
+
     fetch("/api/upload/by-url", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -245,20 +339,27 @@
         if (!ok) throw new Error(d.detail || "URL indirilemedi");
         setP1(100);
         $("p1-label").textContent = "Sunucu indirdi ✓";
-        // URL upload server-side; doğrudan status poll başlat
-        current = { file: { name: d.name }, token: d.token };
-        pollStatus();
+        item.token = d.token;
+        if (d.name) item.safeName = d.name;
+        return pollStatus(item);
       })
       .catch((e) => {
+        item.status = "failed";
+        item.error = e.message;
+        renderQueue();
         stage("pick");
         showError(e.message);
-        current = null;
+        queue = [];
+        activeCount = 0;
       });
   }
 
   // ---------- Olaylar ----------
   dropzone.addEventListener("click", () => fileInput.click());
-  fileInput.addEventListener("change", (e) => pickFile(e.target.files[0]));
+  fileInput.addEventListener("change", (e) => {
+    enqueueFiles(e.target.files);
+    e.target.value = ""; // aynı dosya tekrar seçilebilsin
+  });
 
   ["dragover", "dragenter"].forEach((ev) =>
     dropzone.addEventListener(ev, (e) => {
@@ -273,35 +374,65 @@
     })
   );
   dropzone.addEventListener("drop", (e) => {
-    if (e.dataTransfer.files.length) pickFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files.length) enqueueFiles(e.dataTransfer.files);
   });
 
   $("cancel-btn").addEventListener("click", () => {
-    if (current && current.token) {
-      if (current.xhr) current.xhr.abort();
-      fetch(`/api/upload/${current.token}`, { method: "DELETE" }).catch(() => {});
-    }
-    current = null;
+    cancelled = true;
+    queue.forEach((item) => {
+      if (item.status === "uploading" && item.token) {
+        if (item.xhr) item.xhr.abort();
+        fetch(`/api/upload/${item.token}`, { method: "DELETE" }).catch(() => {});
+      }
+    });
+    queue = [];
+    activeCount = 0;
     stage("pick");
   });
 
-  $("copy-btn").addEventListener("click", async () => {
-    const v = $("res-link").value;
-    try {
-      await navigator.clipboard.writeText(v);
-      toast("Bağlantı kopyalandı!");
-    } catch (e) {
-      $("res-link").select();
-      document.execCommand("copy");
-      toast("Bağlantı kopyalandı!");
-    }
+  $("copy-all-btn").addEventListener("click", () => {
+    const links = queue.filter((q) => q.status === "done").map((q) => q.link);
+    if (links.length) copyText(links.join("\n"));
   });
 
   $("again-btn").addEventListener("click", () => {
-    current = null;
-    fileInput.value = "";
+    queue = [];
+    activeCount = 0;
+    cancelled = false;
     stage("pick");
   });
+
+  // ---------- Kuyruk listesi render ----------
+  function renderQueue() {
+    const box = $("queue-box");
+    if (!box) return;
+    const doneCount = queue.filter((q) => q.status === "done").length;
+    const total = queue.length;
+    box.innerHTML = "";
+    const header = document.createElement("div");
+    header.className = "queue-header";
+    header.textContent = `${doneCount}/${total} dosya yüklendi`;
+    box.appendChild(header);
+    queue.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "queue-row";
+      const name = document.createElement("span");
+      name.className = "queue-row-name";
+      name.textContent = item.safeName || item.file.name;
+      name.title = item.file.name;
+      const st = document.createElement("span");
+      st.className = "queue-row-status";
+      switch (item.status) {
+        case "waiting": st.textContent = "bekliyor"; st.classList.add("q-wait"); break;
+        case "uploading": st.textContent = "yükleniyor"; st.classList.add("q-upload"); break;
+        case "done": st.textContent = "✓"; st.classList.add("q-done"); break;
+        case "failed": st.textContent = item.error ? "✗ " + item.error : "✗"; st.classList.add("q-fail"); break;
+      }
+      row.appendChild(name);
+      row.appendChild(st);
+      box.appendChild(row);
+    });
+  }
 
   let toastTimer = null;
   function toast(msg) {

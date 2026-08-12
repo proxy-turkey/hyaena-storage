@@ -101,6 +101,10 @@ func (s *Service) EnsureDailyChannel(ctx context.Context) error {
 		return err
 	}
 	day := todayLocal()
+	// Exists-check kilidin İÇİNDE: EnsureFleet + zamanlayıcı aynı anda çağırırsa
+	// ikisi de check'i geçip aynı gün çift kanal açmasın (check-then-act).
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	exists, err := s.db.ChannelExistsForDay(day)
 	if err != nil {
 		return err
@@ -108,8 +112,6 @@ func (s *Service) EnsureDailyChannel(ctx context.Context) error {
 	if exists {
 		return nil // bugünün kanalı zaten var
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	_, err = s.createChannelLocked(ctx, titleForDay(day), day)
 	if err != nil {
 		log.Printf("Günlük kanal oluşturulamadı: %v", err)

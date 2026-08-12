@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -24,30 +26,67 @@ type byURLBody struct {
 // knownExts, by-url isim türetmesinde uzantı korunacak tipler (Python birebir).
 var knownExts = []string{".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".txt", ".mp4", ".zip"}
 
+// isBlockedIP, SSRF koruması: özel/loopback/link-local/yerel IP'leri reddeder.
+// IPv4-mapped IPv6 (::ffff:127.0.0.1) formu da kontrol edilir.
+func isBlockedIP(ip net.IP) bool {
+	if v4 := ip.To4(); v4 != nil {
+		return v4.IsPrivate() || v4.IsLoopback() || v4.IsLinkLocalUnicast() ||
+			v4.IsUnspecified() || v4.IsMulticast()
+	}
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+		ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalMulticast()
+}
+
 // guardPublicURL, SSRF koruması: sadece genel http/https adresler.
-func guardPublicURL(raw string) (string, error) {
+// IP literali, localhost ve bilinen yerel hostname'ler reddedilir.
+func guardPublicURL(raw string) error {
 	if raw == "" || len(raw) > 2048 {
-		return "", fmt.Errorf("Geçersiz URL")
+		return fmt.Errorf("Geçersiz URL")
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Hostname() == "" {
-		return "", fmt.Errorf("Geçersiz URL")
+		return fmt.Errorf("Geçersiz URL")
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("Yalnızca http/https adresler kabul edilir")
+		return fmt.Errorf("Yalnızca http/https adresler kabul edilir")
 	}
 	host := strings.ToLower(u.Hostname())
-	// IP literali mi?
 	if ip := net.ParseIP(host); ip != nil {
-		// link-local: 169.254.0.0/16 (IPv4) veya fe80::/10 (IPv6)
-		if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
-			ip.IsUnspecified() || ip.IsMulticast() {
-			return "", fmt.Errorf("Yerel adreslere izin verilmez")
+		if isBlockedIP(ip) {
+			return fmt.Errorf("Yerel adreslere izin verilmez")
 		}
-	} else if host == "localhost" || host == "127.0.0.1" || host == "::1" {
-		return "", fmt.Errorf("Yerel adreslere izin verilmez")
+		return nil
 	}
-	return raw, nil
+	// Hostname: yerel anlamı olan adlar
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "metadata.google.internal" ||
+		strings.HasSuffix(host, ".localhost") || host == "0" {
+		return fmt.Errorf("Yerel adreslere izin verilmez")
+	}
+	return nil
+}
+
+// ssrfDialContext, http.Client için özel dial: bağlantı anında hostname'i çözer
+// ve tüm çözülen IP'ler genel değilse reddeder (DNS rebinding + decimal/hex/octal
+// IP formları dahil — net/url bunları hostname olarak yorumlar).
+func ssrfDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("çözümlenebilir adres yok")
+	}
+	for _, ia := range ips {
+		if isBlockedIP(ia.IP) {
+			return nil, fmt.Errorf("yerel adrese bağlanılamaz: %s", ia.IP)
+		}
+	}
+	d := &net.Dialer{Timeout: 15 * time.Second}
+	return d.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
 }
 
 // deriveName, by-url için isim türetir: body.name veya URL basename.
@@ -65,15 +104,15 @@ func deriveName(nameHint, rawURL string) string {
 		name = "url-dosya"
 	}
 	name = core.SanitizeFilename(name)
+	// uzantı koruması: bilinen tipler dokunulmaz; bilinmeyenlerde yalnızca
+	// isimde hiç nokta yoksa ".bin" eklenir (song.mp3 → song.mp3, asla song.mp3.bin).
 	lower := strings.ToLower(name)
-	known := false
 	for _, e := range knownExts {
 		if strings.HasSuffix(lower, e) {
-			known = true
-			break
+			return name
 		}
 	}
-	if !known {
+	if !strings.Contains(name, ".") {
 		name += ".bin"
 	}
 	return name
@@ -85,16 +124,14 @@ func (sv *Server) uploadByURL(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "Geçersiz istek")
 		return
 	}
-	rawURL, err := guardPublicURL(body.URL)
-	if err != nil {
+	if err := guardPublicURL(body.URL); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	rawURL := body.URL
 	name := deriveName(body.Name, rawURL)
 
-	if sv.tw != nil {
-		go func() { _ = sv.tw.EnsureFleet(sv.ctx) }()
-	}
+	sv.ensureFleet()
 	chs, err := sv.store.ListChannels()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "Kanal listesi okunamadı")
@@ -153,15 +190,13 @@ func (sv *Server) uploadByURL(w http.ResponseWriter, r *http.Request) {
 // Arka plan goroutine'inde çalışır — hatalar DB'ye 'failed' olarak yazılır.
 func (sv *Server) downloadAndUpload(rawURL, name, token, tmpDir string, fid int64, channelIDs []int64) {
 	client := &http.Client{
-		Timeout: 30 * time.Minute,
+		Timeout:   30 * time.Minute,
+		Transport: &http.Transport{DialContext: ssrfDialContext},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("çok fazla yönlendirme")
 			}
-			if _, err := guardPublicURL(req.URL.String()); err != nil {
-				return err
-			}
-			return nil
+			return guardPublicURL(req.URL.String())
 		},
 	}
 
@@ -284,5 +319,13 @@ func (sv *Server) downloadAndUpload(rawURL, name, token, tmpDir string, fid int6
 		fail("Telegram worker yok")
 		return
 	}
-	_ = sv.tw.UploadSegments(sv.ctx, fid, tmpDir, segments, plan, mime)
+	if err := sv.tw.UploadSegments(sv.ctx, fid, tmpDir, segments, plan, mime); err != nil {
+		// UploadSegments içeride parça hatasında SetFileFailed yapar; buraya
+		// sadece çok-erken hatalar (apiGuard, kanal yok) düşer — dosya takılmasın.
+		log.Printf("By-url Telegram upload hatası (file=%d): %v", fid, err)
+		if f, gerr := sv.store.GetFileByID(fid); gerr == nil && f != nil && f.Status == "uploading" {
+			_ = sv.store.SetFileFailed(fid, err.Error())
+		}
+		cleanupTmp(tmpDir)
+	}
 }
