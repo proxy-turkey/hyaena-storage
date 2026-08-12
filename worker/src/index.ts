@@ -24,6 +24,8 @@ export default {
     const origin = env.ORIGIN_URL || "https://http--hyaena-storage--kkg797wpkmd9.code.run";
 
     // Sadece dosya stream path'ini cache'le; meta (/api/download/{token}) ve diğerleri passthrough
+    // NOT: url.pathname decode edilmiş olur (%20 -> boşluk). Cache matcing için decode edilmiş path kullan,
+    // origin'e ise HAM (encoded) path gitmeli ki %20 korunsun.
     const isCacheable = CACHEABLE.test(url.pathname);
     const cache = caches.default;
 
@@ -36,8 +38,10 @@ export default {
       }
     }
 
-    // Origin'e proxy isteği: path'i koru, origin host'a yönlendir
-    const originUrl = origin + url.pathname + url.search;
+    // Origin'e proxy isteği: HAM path korunarak (decode edilmemiş) gönderilir.
+    // request.url'un query'siz ham hali: url.pathname decode eder, bu yüzden raw'dan al.
+    const rawPath = request.url.split("?")[0];
+    const originUrl = origin + rawPath + url.search;
     const originReq = new Request(originUrl, request);
 
     let response: Response;
