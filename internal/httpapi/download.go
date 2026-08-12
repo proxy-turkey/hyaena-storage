@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -77,6 +78,7 @@ func (sv *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if f.OriginalName != name {
+		log.Printf("İsim eşleşmiyor: url_name=%q db_name=%q", name, f.OriginalName)
 		writeErr(w, http.StatusNotFound, "İsim eşleşmiyor")
 		return
 	}
