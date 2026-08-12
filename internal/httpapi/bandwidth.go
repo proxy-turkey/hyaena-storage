@@ -149,6 +149,7 @@ func renderBandwidthHTML(d bandwidthData) string {
 	return `<!DOCTYPE html>
 <html lang="tr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hyaena Storage — Egress</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <style>
 :root{--bg:#0a0a0f;--card:rgba(255,255,255,.045);--border:rgba(255,255,255,.09);--text:#f5f5f7;--dim:#9b9ba7;--danger:#ff453a}
 *{box-sizing:border-box;margin:0;padding:0}
