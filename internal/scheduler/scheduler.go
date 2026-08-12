@@ -1,14 +1,18 @@
-// Package scheduler, zamanlanmış görevleri yönetir: günlük +1 kanal ve süre sonu temizliği.
+// Package scheduler, zamanlanmış görevleri yönetir: günlük +1 kanal, süre sonu
+// ve geçici dizin temizliği.
 package scheduler
 
 import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/robfig/cron/v3"
 
+	"github.com/proxy-turkey/hyaena-storage/internal/core"
 	"github.com/proxy-turkey/hyaena-storage/internal/storage"
 	"github.com/proxy-turkey/hyaena-storage/internal/tgworker"
 )
@@ -16,7 +20,8 @@ import (
 // Start, zamanlayıcıyı başlatır:
 //   - her gün channelCreationHour'da günlük kanal oluşturur
 //   - her dakika süresi dolan dosyaları temizler (DB + Telegram mesajları)
-func Start(hour int, tw *tgworker.Service, store *storage.Store) *cron.Cron {
+//   - her 15 dakikada sahipsiz geçici parça dizinlerini temizler
+func Start(hour int, tw *tgworker.Service, store *storage.Store, tmpRoot string) *cron.Cron {
 	c := cron.New(cron.WithLocation(time.Local))
 
 	// günlük +1 kanal
@@ -38,9 +43,38 @@ func Start(hour int, tw *tgworker.Service, store *storage.Store) *cron.Cron {
 		log.Printf("Cron kaydı başarısız (süre sonu): %v", err)
 	}
 
+	// her 15 dakikada sahipsiz geçici parça dizinlerini temizle (volume birikmesin)
+	if _, err := c.AddFunc("*/15 * * * *", func() {
+		sweepTmp(context.Background(), tmpRoot, store)
+	}); err != nil {
+		log.Printf("Cron kaydı başarısız (tmp temizlik): %v", err)
+	}
+
 	c.Start()
-	log.Printf("Zamanlayıcı başladı: her gün %02d:00'da +1 kanal; süresi dolan dosyalar her dakika silinir", hour)
+	log.Printf("Zamanlayıcı başladı: her gün %02d:00'da +1 kanal; süresi dolan dosyalar her dakika, tmp her 15 dk temizlenir", hour)
 	return c
+}
+
+// sweepTmp, geçici upload dizinlerini temizler (DB'de kaydı olmayanları siler).
+// Volume'un gereksiz parça kalıntılarıyla dolmasını önler.
+func sweepTmp(ctx context.Context, tmpRoot string, store *storage.Store) {
+	entries, err := os.ReadDir(tmpRoot)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if !core.ValidShareToken(e.Name()) {
+			continue // session gibi token-olmayan dizinlere dokunma
+		}
+		f, _ := store.GetFileByToken(e.Name())
+		if f == nil {
+			_ = os.RemoveAll(filepath.Join(tmpRoot, e.Name()))
+			log.Printf("Sahipsiz tmp dizini temizlendi: %s", e.Name())
+		}
+	}
 }
 
 // expireFiles, süresi dolmuş dosyaları bulur, Telegram mesajlarını siler ve DB'den kaldırır.

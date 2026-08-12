@@ -71,8 +71,8 @@ func main() {
 		Handler: handler,
 	}
 
-	// günlük +1 kanal + süre sonu temizliği
-	sch := scheduler.Start(cfg.ChannelCreationHour, tw, store)
+	// günlük +1 kanal + süre sonu + tmp temizliği
+	sch := scheduler.Start(cfg.ChannelCreationHour, tw, store, cfg.TmpDir())
 	defer sch.Stop()
 
 	// HTTP sunucusunu başlat
