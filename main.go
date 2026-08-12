@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/proxy-turkey/hyaena-storage/internal/config"
+	"github.com/proxy-turkey/hyaena-storage/internal/core"
 	"github.com/proxy-turkey/hyaena-storage/internal/httpapi"
 	"github.com/proxy-turkey/hyaena-storage/internal/scheduler"
 	"github.com/proxy-turkey/hyaena-storage/internal/storage"
@@ -164,6 +165,11 @@ func sweepOrphanTmp(tmpRoot string, store *storage.Store, maxAge time.Duration) 
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
+			continue
+		}
+		// Sadece geçerli paylaşım token'ı formatındaki dizinleri ele al.
+		// session gibi token-olmayan dizinler asla silinmez (session volume'da saklanabilir).
+		if !core.ValidShareToken(e.Name()) {
 			continue
 		}
 		p := filepath.Join(tmpRoot, e.Name())
