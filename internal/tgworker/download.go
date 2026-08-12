@@ -8,7 +8,7 @@ import (
 
 	"github.com/gotd/td/tg"
 
-	"tgshare/internal/storage"
+	"github.com/proxy-turkey/hyaena-storage/internal/storage"
 )
 
 // DownloadSegment, parçayı Telegram'dan indirip w'e akışkan yazar.

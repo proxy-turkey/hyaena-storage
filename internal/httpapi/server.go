@@ -9,10 +9,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"tgshare/internal/config"
-	"tgshare/internal/core"
-	"tgshare/internal/storage"
-	"tgshare/internal/tgworker"
+	"github.com/proxy-turkey/hyaena-storage/internal/config"
+	"github.com/proxy-turkey/hyaena-storage/internal/core"
+	"github.com/proxy-turkey/hyaena-storage/internal/storage"
+	"github.com/proxy-turkey/hyaena-storage/internal/tgworker"
 )
 
 // Server, HTTP handler ve paylaşılan durumu tutar.

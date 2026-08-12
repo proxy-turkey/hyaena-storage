@@ -11,7 +11,7 @@ import (
 	"github.com/gotd/td/telegram/message/unpack"
 	"github.com/gotd/td/tg"
 
-	"tgshare/internal/storage"
+	"github.com/proxy-turkey/hyaena-storage/internal/storage"
 )
 
 // UploadSegments, parçaları round-robin kanallara Document olarak yükler.

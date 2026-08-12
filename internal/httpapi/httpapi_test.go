@@ -13,8 +13,8 @@ import (
 	"sync"
 	"testing"
 
-	"tgshare/internal/config"
-	"tgshare/internal/storage"
+	"github.com/proxy-turkey/hyaena-storage/internal/config"
+	"github.com/proxy-turkey/hyaena-storage/internal/storage"
 )
 
 // stubWorker, tgworker.Worker arayüzünü taklit eder (Telegram'sız test).

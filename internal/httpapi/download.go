@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"tgshare/internal/storage"
+	"github.com/proxy-turkey/hyaena-storage/internal/storage"
 )
 
 // fileExpired, dosyanın süresi dolmuş mu döndürür (expires_at <= now UTC).

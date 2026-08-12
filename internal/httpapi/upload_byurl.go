@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"tgshare/internal/core"
+	"github.com/proxy-turkey/hyaena-storage/internal/core"
 )
 
 type byURLBody struct {

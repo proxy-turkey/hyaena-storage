@@ -1,4 +1,4 @@
-module tgshare
+module github.com/proxy-turkey/hyaena-storage
 
 go 1.25.12
 

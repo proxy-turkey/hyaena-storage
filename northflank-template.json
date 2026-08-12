@@ -1,0 +1,47 @@
+{
+  "apiVersion": "v1.2",
+  "spec": {
+    "kind": "Workflow",
+    "spec": {
+      "type": "sequential",
+      "context": { "projectId": "hyaena" },
+      "steps": [
+        {
+          "kind": "CombinedService",
+          "ref": "storage",
+          "spec": {
+            "name": "hyaena-storage",
+            "vcsData": {
+              "projectType": "github",
+              "projectUrl": "https://github.com/proxy-turkey/hyaena-storage",
+              "projectBranch": "master"
+            },
+            "buildSettings": {
+              "buildpack": {
+                "builder": "HEROKU_24",
+                "buildContext": "/",
+                "useCache": true
+              }
+            },
+            "deployment": {
+              "instances": 1,
+              "storage": { "ephemeralStorage": { "storageSize": 2048 }, "shmSize": 64 }
+            },
+            "runtimeEnvironment": {},
+            "ports": [
+              {
+                "name": "http",
+                "internalPort": 8000,
+                "public": true,
+                "protocol": "HTTP",
+                "domains": ["storage.hyaena.co.uk"],
+                "disableNfDomain": false
+              }
+            ],
+            "billing": { "deploymentPlan": "nf-compute-10", "buildPlan": "nf-compute-200-8" }
+          }
+        }
+      ]
+    }
+  }
+}

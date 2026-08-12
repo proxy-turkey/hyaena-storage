@@ -9,7 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"tgshare/internal/core"
+	"github.com/proxy-turkey/hyaena-storage/internal/core"
 )
 
 // writeJSON, yanıtı JSON olarak yazar.

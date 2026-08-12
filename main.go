@@ -15,11 +15,11 @@ import (
 	"syscall"
 	"time"
 
-	"tgshare/internal/config"
-	"tgshare/internal/httpapi"
-	"tgshare/internal/scheduler"
-	"tgshare/internal/storage"
-	"tgshare/internal/tgworker"
+	"github.com/proxy-turkey/hyaena-storage/internal/config"
+	"github.com/proxy-turkey/hyaena-storage/internal/httpapi"
+	"github.com/proxy-turkey/hyaena-storage/internal/scheduler"
+	"github.com/proxy-turkey/hyaena-storage/internal/storage"
+	"github.com/proxy-turkey/hyaena-storage/internal/tgworker"
 )
 
 //go:embed static

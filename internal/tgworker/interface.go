@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 
-	"tgshare/internal/storage"
+	"github.com/proxy-turkey/hyaena-storage/internal/storage"
 )
 
 // Worker, HTTP katmanının Telegram worker'dan beklediği arayüz.

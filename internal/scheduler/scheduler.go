@@ -9,8 +9,8 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"tgshare/internal/storage"
-	"tgshare/internal/tgworker"
+	"github.com/proxy-turkey/hyaena-storage/internal/storage"
+	"github.com/proxy-turkey/hyaena-storage/internal/tgworker"
 )
 
 // Start, zamanlayıcıyı başlatır:

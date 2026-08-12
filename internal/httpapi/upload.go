@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"tgshare/internal/core"
+	"github.com/proxy-turkey/hyaena-storage/internal/core"
 )
 
 // tokenLen, valid_token eşiği (core ile tutarlı).

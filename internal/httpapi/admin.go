@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"tgshare/internal/core"
+	"github.com/proxy-turkey/hyaena-storage/internal/core"
 )
 
 func (sv *Server) adminLogin(w http.ResponseWriter, r *http.Request) {

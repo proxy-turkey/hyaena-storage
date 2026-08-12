@@ -17,8 +17,8 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 
-	"tgshare/internal/config"
-	"tgshare/internal/storage"
+	"github.com/proxy-turkey/hyaena-storage/internal/config"
+	"github.com/proxy-turkey/hyaena-storage/internal/storage"
 )
 
 // Service, Telegram istemcisini sarar ve HTTP katmanına hazır arayüz sunar.
