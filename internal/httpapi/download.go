@@ -58,6 +58,11 @@ func (sv *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := urlParam(r, "name")
+	// chi {name} path parametresini URL-decode etmeden döndürebilir;
+	// %20 gibi kodlanmış boşlukları elle çöz (dosya adlarında boşluk/özel karakter yaygın).
+	if unescaped, err := url.PathUnescape(name); err == nil {
+		name = unescaped
+	}
 	f, err := sv.store.GetFileByToken(token)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "Sorgu hatası")
