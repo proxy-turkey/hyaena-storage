@@ -82,12 +82,16 @@ func (sv *Server) loginLimit(next http.Handler) http.Handler {
 
 // mimeFileServer, embed FS'ten MIME türünü doğru ayarlayarak dosya servis eder.
 // http.FileServer fs.FS'de MIME map'ini kuramaz; uzantıya göre Content-Type set edilir.
+// Statik dosyalar no-cache servis edilir: UI güncellemeleri (app.js/html/css)
+// Cloudflare edge cache'inde 31 gün takılı kalmasın. Download'ların uzun TTL'si
+// ayrı endpoint olduğu için etkilenmez.
 func mimeFileServer(fsys fs.FS) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(r.URL.Path, "/")
 		if ct := mimeTypeByExt(name); ct != "" {
 			w.Header().Set("Content-Type", ct)
 		}
+		w.Header().Set("Cache-Control", "no-cache")
 		http.FileServer(http.FS(fsys)).ServeHTTP(w, r)
 	})
 }

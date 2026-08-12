@@ -37,6 +37,8 @@ func serveFile(w http.ResponseWriter, r *http.Request, fsys fs.FS, path string) 
 	if ct := mimeTypeByExt(path); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
+	// HTML sayfaları no-cache: güncellemeler (marka, metinler) anında yayılsın.
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFileFS(w, r, fsys, path)
 }
 
