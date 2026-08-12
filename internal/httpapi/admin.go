@@ -169,6 +169,12 @@ func (sv *Server) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = sv.store.DeleteFile(f.ID)
 	cleanupTmp(sv.fileTmpDir(token))
+	// Cloudflare Worker edge cache'ini temizle (silinen dosya erişilebilir kalmasın)
+	if sv.s.CFZoneID != "" && sv.s.CFAPIKey != "" {
+		base := "https://storage.hyaena.co.uk"
+		sv.purgeCacheFile(base + "/api/download/" + token + "/" + f.OriginalName)
+		sv.purgeCacheFile(base + "/api/download/" + token)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "parts_deleted": len(parts)})
 }
 

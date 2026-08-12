@@ -1,0 +1,13 @@
+name = "hyaena-storage-download"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Origin: Northflank otomatik domain
+[vars]
+ORIGIN_URL = "https://http--hyaena-storage--kkg797wpkmd9.code.run"
+CACHE_TTL = "2592000"  # 30 gün
+
+# Sadece download path'lerini Worker'a yönlendir (diğerleri Cloudflare'dan Northflank'a gider)
+routes = [
+  { pattern = "storage.hyaena.co.uk/api/download/*", zone_name = "hyaena.co.uk" }
+]

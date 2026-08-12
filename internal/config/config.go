@@ -38,6 +38,11 @@ type Settings struct {
 	DatabaseURL string // Supabase/Postgres connection string
 	TmpRoot     string
 
+	// Cloudflare cache purge (dosya silinince Worker cache'ten düşsün)
+	CFZoneID  string
+	CFAPIKey  string
+	CFAPIEmail string
+
 	// türetilmiş
 	ProjectRoot string
 }
@@ -213,6 +218,9 @@ func Load(root string) (*Settings, error) {
 	s.RateLimitPerMin = getInt("RATE_LIMIT_PER_MIN", s.RateLimitPerMin)
 	s.DatabaseURL = getStr("DATABASE_URL", "", "")
 	s.TmpRoot = getStr("TMP_ROOT", "", s.TmpRoot)
+	s.CFZoneID = getStr("CF_ZONE_ID", "", "")
+	s.CFAPIKey = getStr("CF_API_KEY", "", "")
+	s.CFAPIEmail = getStr("CF_API_EMAIL", "", "")
 
 	return s, nil
 }
