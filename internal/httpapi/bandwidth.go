@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -23,13 +22,17 @@ type nfMetricSeries struct {
 }
 
 // northflankMetrics, Northflank metrics API'sinden bir metric çeker.
-func (sv *Server) northflankMetrics(metricType string) (map[string]nfMetricSeries, error) {
+// hours: son kaç saatlik aralık (toplam için 30gün=720h, anlık için 24h).
+func (sv *Server) northflankMetrics(metricType string, hours int) (map[string]nfMetricSeries, error) {
 	s := sv.s
 	if s.NFToken == "" {
 		return nil, fmt.Errorf("NORTHFLANK_TOKEN yok")
 	}
+	if hours <= 0 {
+		hours = 24
+	}
 	now := time.Now().UTC()
-	from := now.Add(-24 * time.Hour).Format("2006-01-02T15:04:05.000Z")
+	from := now.Add(-time.Duration(hours) * time.Hour).Format("2006-01-02T15:04:05.000Z")
 	to := now.Format("2006-01-02T15:04:05.000Z")
 	url := fmt.Sprintf(
 		"https://api.northflank.com/v1/projects/%s/services/%s/metrics?metricTypes=%s&queryType=range&startTime=%s&endTime=%s",
@@ -65,78 +68,56 @@ type bandwidthData struct {
 	FetchedAt   string
 	Project     string
 	Service     string
-	Source      string // veri kaynağı: "cloudflare" veya "northflank"
-}
-
-// cloudflareBandwidthBytes, Cloudflare GraphQL Analytics'ten son days günün
-// toplam indirilen bytes değerini döndürür. Gerçek trafik Cloudflare edge
-// cache'inden servis edildiği için asıl kullanım buradadır (Northflank ~0 kalır).
-func (sv *Server) cloudflareBandwidthBytes(days int) (int64, error) {
-	s := sv.s
-	if s.CFZoneID == "" || s.CFAPIKey == "" || s.CFAPIEmail == "" {
-		return 0, fmt.Errorf("Cloudflare API yapılandırılmamış")
-	}
-	from := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
-	query := fmt.Sprintf(`{ viewer { zones(filter: {zoneTag: "%s"}) { httpRequests1dGroups(limit: %d, filter: {date_geq: "%s"}) { sum { bytes } } } } }`,
-		s.CFZoneID, days, from)
-
-	body, _ := json.Marshal(map[string]string{"query": query})
-	req, _ := http.NewRequest("POST", "https://api.cloudflare.com/client/v4/graphql", strings.NewReader(string(body)))
-	req.Header.Set("X-Auth-Email", s.CFAPIEmail)
-	req.Header.Set("X-Auth-Key", s.CFAPIKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-
-	var result struct {
-		Data struct {
-			Viewer struct {
-				Zones []struct {
-					HTTPRequests1dGroups []struct {
-						Sum struct {
-							Bytes int64 `json:"bytes"`
-						} `json:"sum"`
-					} `json:"httpRequests1dGroups"`
-				} `json:"zones"`
-			} `json:"viewer"`
-		} `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return 0, err
-	}
-	if len(result.Errors) > 0 {
-		return 0, fmt.Errorf("Cloudflare GraphQL: %s", result.Errors[0].Message)
-	}
-	var total int64
-	for _, z := range result.Data.Viewer.Zones {
-		for _, g := range z.HTTPRequests1dGroups {
-			total += g.Sum.Bytes
-		}
-	}
-	return total, nil
 }
 
 func (sv *Server) collectBandwidth() bandwidthData {
 	d := bandwidthData{LimitGB: 10, FetchedAt: time.Now().UTC().Format("2006-01-02 15:04:05"), Project: sv.s.NFProject, Service: sv.s.NFService}
 
-	// Toplam kullanım: Cloudflare Analytics (gerçek indirme trafiği edge cache'ten
-	// geçtiği için asıl sayı burasıdır). CF başarısızsa Northflank bandwidthVolume'a düş.
-	cfBytes, cfErr := sv.cloudflareBandwidthBytes(30)
-	if cfErr == nil {
-		d.TotalKB = float64(cfBytes) / 1024.0
-		d.Source = "cloudflare"
-	} else {
-		d.VolErr = cfErr.Error()
-		vol, volErr := sv.northflankMetrics("bandwidthVolume")
+	// Anlık egress hızı: networkEgress (kbps), son 24 saat — tüm container'ların
+	// EN SON değerleri toplamı. Northflank 30dk aralıklı örnekler verir.
+	egr24, egrErr := sv.northflankMetrics("networkEgress", 24)
+	if egrErr != nil {
+		d.EgrErr = egrErr.Error()
+	} else if md, ok := egr24["networkEgress"]; ok {
+		latest := 0.0
+		for _, c := range md.Values {
+			if len(c.Data) > 0 {
+				latest += c.Data[len(c.Data)-1].Value
+			}
+		}
+		d.LatestKbps = latest
+	}
+
+	// Toplam kullanım: networkEgress (kbps) son 30 gün — hız × zaman integrali.
+	//   kbps × 1000 bit/s × örnek_aralığı_sn = bit → /8 = byte → /1024 = kb.
+	// bandwidthVolume (kb) bu serviste toplanmadığı için (0 döner), toplam
+	// networkEgress'ten türetilir — Northflank'ın ölçtüğü gerçek egress.
+	egr30, egr30Err := sv.northflankMetrics("networkEgress", 720)
+	if egr30Err != nil {
+		d.VolErr = egr30Err.Error()
+	} else if md, ok := egr30["networkEgress"]; ok {
+		for _, c := range md.Values {
+			pts := c.Data
+			// örnek aralığını iki noktadan tahmin et (varsayılan 30dk=1800sn)
+			interval := 1800.0
+			if len(pts) >= 2 {
+				t0, e0 := time.Parse(time.RFC3339, pts[0].Ts)
+				t1, e1 := time.Parse(time.RFC3339, pts[1].Ts)
+				if e0 == nil && e1 == nil {
+					if dsec := t1.Sub(t0).Seconds(); dsec > 0 {
+						interval = dsec
+					}
+				}
+			}
+			for _, p := range pts {
+				d.TotalKB += (p.Value * 1000 * interval) / 8 / 1024
+			}
+		}
+	}
+
+	// networkEgress yine de boşsa, bandwidthVolume'a düş.
+	if d.TotalKB <= 0 {
+		vol, volErr := sv.northflankMetrics("bandwidthVolume", 720)
 		if volErr == nil {
 			if md, ok := vol["bandwidthVolume"]; ok {
 				for _, c := range md.Values {
@@ -145,27 +126,9 @@ func (sv *Server) collectBandwidth() bandwidthData {
 					}
 				}
 			}
-			d.Source = "northflank"
 		} else {
 			d.VolErr = volErr.Error()
 		}
-	}
-
-	// Anlık egress hızı: Northflank networkEgress (kbps) — son container'ların
-	// son değerleri toplamı. 5dk gecikmeli ama gerçek; sabit/yanlış değil.
-	egr, egrErr := sv.northflankMetrics("networkEgress")
-	if egrErr == nil {
-		if md, ok := egr["networkEgress"]; ok {
-			latest := 0.0
-			for _, c := range md.Values {
-				if len(c.Data) > 0 {
-					latest += c.Data[len(c.Data)-1].Value
-				}
-			}
-			d.LatestKbps = latest
-		}
-	} else {
-		d.EgrErr = egrErr.Error()
 	}
 
 	d.TotalGB = d.TotalKB / (1024 * 1024)
@@ -187,7 +150,6 @@ func (sv *Server) bandwidthPage(w http.ResponseWriter, r *http.Request) {
 			"fetched_at":   d.FetchedAt,
 			"project":      d.Project,
 			"service":      d.Service,
-			"source":       d.Source,
 		})
 		return
 	}
@@ -217,14 +179,11 @@ func renderBandwidthHTML(d bandwidthData) string {
 	if d.EgrErr != "" {
 		errHTML += fmt.Sprintf(`<div class="err">⚠ Hız hatası: %s</div>`, d.EgrErr)
 	}
-	// Kaynak bilgisi: Toplam Cloudflare Analytics'ten gelir (gerçek trafik),
-	// anlık hız Northflank'tan (5dk gecikmeli). Kullanıcı veri kaynağını bilsin.
-	if d.Source != "" {
-		label := "Cloudflare Analytics"
-		if d.Source == "northflank" {
-			label = "Northflank"
-		}
-		errHTML += fmt.Sprintf(`<div class="hint">Veri kaynağı: %s · Toplam: son 30 gün · Anlık hız: son ölçüm</div>`, label)
+	// Açıklama: Toplam Northflank'ın ölçtüğü gerçek egress'tir. Cloudflare
+	// bypass aktifken ~0 kalır (origin'e egress gitmiyor) — bu istenen davranış,
+	// "bozuk" değil. Kullanıcı yanlış yorumlamasın.
+	if d.TotalGB < 0.001 && d.VolErr == "" {
+		errHTML += `<div class="hint">Northflank egress ~0 — Cloudflare bypass aktif, indirilen trafik edge cache'ten servis ediliyor. Origin'e egress gitmiyor.</div>`
 	}
 
 	return `<!DOCTYPE html>
