@@ -74,13 +74,16 @@ func (s *Service) ResyncPart(ctx context.Context, partID int64) (bool, error) {
 		return false, nil
 	}
 
-	var msgs tg.MessagesMessagesClass
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Kanal mesajları MessagesGetMessages ile getirilmez; ChannelsGetMessages gerekir.
+	// (Broadcast kanallarda mesaj silme için de ChannelsDeleteMessages şart — aynı kural.)
+	var msgs tg.MessagesMessagesClass
 	err = s.call(ctx, func() error {
 		var e error
-		msgs, e = s.api.MessagesGetMessages(ctx, []tg.InputMessageClass{
-			&tg.InputMessageID{ID: *part.TelegramMsgID},
+		msgs, e = s.api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+			Channel: s.inputChannel(*ch),
+			ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: *part.TelegramMsgID}},
 		})
 		return e
 	})
@@ -88,20 +91,12 @@ func (s *Service) ResyncPart(ctx context.Context, partID int64) (bool, error) {
 		return false, err
 	}
 
-	// MessagesMessagesClass interface; concrete tiplere ayrıştır
 	var msg *tg.Message
-	switch ms := msgs.(type) {
-	case *tg.MessagesMessages:
-		for _, m := range ms.Messages {
-			if mm, ok := m.(*tg.Message); ok {
-				msg = mm
-				break
-			}
-		}
+	switch m := msgs.(type) {
 	case *tg.MessagesChannelMessages:
-		for _, m := range ms.Messages {
-			if mm, ok := m.(*tg.Message); ok {
-				msg = mm
+		for _, mm := range m.Messages {
+			if t, ok := mm.(*tg.Message); ok {
+				msg = t
 				break
 			}
 		}

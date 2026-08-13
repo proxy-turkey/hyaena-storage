@@ -140,7 +140,7 @@ func (s *Service) uploadOne(ctx context.Context, ch *storage.Channel, path strin
 	// indirme FILE_REFRESH_EXPIRED verir (küçük dosyalar şans eseri çalışır,
 	// büyük/çok parçalı dosyalar patlar). Python'daki resolve_bot_file_id karşılığı.
 	if len(doc.FileReference) == 0 {
-		if refreshed, rerr := s.reloadDocument(ctx, msg.ID); rerr == nil && refreshed != nil {
+		if refreshed, rerr := s.reloadDocument(ctx, ch, msg.ID); rerr == nil && refreshed != nil {
 			doc = refreshed
 		}
 	}
@@ -164,15 +164,16 @@ func (s *Service) uploadOne(ctx context.Context, ch *storage.Channel, path strin
 	return nil
 }
 
-// reloadDocument, mesajı MessagesGetMessages ile yeniden çekip document'ı
+// reloadDocument, mesajı ChannelsGetMessages ile yeniden çekip document'ı
 // döndürür. Upload yanıtında file_reference eksik olduğunda taze referansı
 // buradan alır. Çağıran s.mu kilidini TUTMALIDIR.
-func (s *Service) reloadDocument(ctx context.Context, msgID int) (*tg.Document, error) {
+func (s *Service) reloadDocument(ctx context.Context, ch *storage.Channel, msgID int) (*tg.Document, error) {
 	var msgs tg.MessagesMessagesClass
 	err := s.call(ctx, func() error {
 		var e error
-		msgs, e = s.api.MessagesGetMessages(ctx, []tg.InputMessageClass{
-			&tg.InputMessageID{ID: msgID},
+		msgs, e = s.api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+			Channel: s.inputChannel(*ch),
+			ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}},
 		})
 		return e
 	})
@@ -180,18 +181,11 @@ func (s *Service) reloadDocument(ctx context.Context, msgID int) (*tg.Document, 
 		return nil, err
 	}
 	var msg *tg.Message
-	switch ms := msgs.(type) {
-	case *tg.MessagesMessages:
-		for _, m := range ms.Messages {
-			if mm, ok := m.(*tg.Message); ok {
-				msg = mm
-				break
-			}
-		}
+	switch m := msgs.(type) {
 	case *tg.MessagesChannelMessages:
-		for _, m := range ms.Messages {
-			if mm, ok := m.(*tg.Message); ok {
-				msg = mm
+		for _, mm := range m.Messages {
+			if t, ok := mm.(*tg.Message); ok {
+				msg = t
 				break
 			}
 		}
