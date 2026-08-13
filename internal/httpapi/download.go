@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -132,6 +133,8 @@ func (sv *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 	for _, p := range parts {
 		if err := sv.tw.DownloadSegment(r.Context(), p, fw); err != nil {
 			// akış başladıktan sonra status gönderilemez; bağlantıyı kes
+			log.Printf("DownloadSegment hatası (file=%d token=%s part=%d/%d): %v",
+				f.ID, f.Token, p.PartIndex, f.PartCount, err)
 			return
 		}
 		if fl != nil {
