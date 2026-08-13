@@ -35,11 +35,17 @@ type Settings struct {
 	Port int
 	RateLimitPerMin int
 
-	// PublicBaseURL: paylaşım linklerinde kullanılacak dış taban URL.
-	// Cloudflare cache'i büyük dosyaları kestiği için, download'lar doğrudan
-	// orfi sunucusuna (direct.hyaena.co.uk:8080) gider. Boşsa request origin'i
-	// kullanılır (eski davranış).
+	// PublicBaseURL: küçük dosyaların paylaşım link tabanı (Cloudflare cache'li).
+	// Boşsa request origin'i kullanılır.
 	PublicBaseURL string
+
+	// DirectBaseURL: büyük dosyaların paylaşım link tabanı (Cloudflare'sız,
+	// doğrudan orfi sunucusu). Boşsa PublicBaseURL kullanılır.
+	DirectBaseURL string
+
+	// DirectThresholdBytes: bu boyutun ÜZERİNDEKİ dosyalar DirectBaseURL'den
+	// servis edilir (Cloudflare büyük stream'leri kestiği için). Altı PublicBaseURL.
+	DirectThresholdBytes int64
 
 	DatabaseURL string // Supabase/Postgres connection string
 	TmpRoot     string
@@ -230,6 +236,8 @@ func Load(root string) (*Settings, error) {
 	s.DatabaseURL = getStr("DATABASE_URL", "", "")
 	s.TmpRoot = getStr("TMP_ROOT", "", s.TmpRoot)
 	s.PublicBaseURL = getStr("PUBLIC_BASE_URL", "", "")
+	s.DirectBaseURL = getStr("DIRECT_BASE_URL", "", "")
+	s.DirectThresholdBytes = getInt64("DIRECT_THRESHOLD_BYTES", 480*1024*1024)
 	s.CFZoneID = getStr("CF_ZONE_ID", "", "")
 	s.CFAPIKey = getStr("CF_API_KEY", "", "")
 	s.CFAPIEmail = getStr("CF_API_EMAIL", "", "")

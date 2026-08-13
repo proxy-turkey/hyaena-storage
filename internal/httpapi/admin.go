@@ -95,9 +95,14 @@ func (sv *Server) adminCreateChannel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"created": true})
 }
 
-// publicBase, download linklerinin tabanını döndürür. Config'te PublicBaseURL
-// varsa mutlak URL, yoksa boş string (göreceli /api/download/... — eski davranış).
-func (sv *Server) publicBase() string {
+// downloadBase, dosya boyutuna göre link tabanını döndürür.
+// Eşik üstü (Cloudflare büyük stream'leri keser) → DirectBaseURL (Cloudflare'sız),
+// altı → PublicBaseURL (Cloudflare cache'li, egress bypass).
+// Config boşsa boş string → göreceli /api/download/... (eski davranış).
+func (sv *Server) downloadBase(size int64) string {
+	if sv.s.DirectBaseURL != "" && size > sv.s.DirectThresholdBytes {
+		return sv.s.DirectBaseURL
+	}
 	return sv.s.PublicBaseURL
 }
 
@@ -147,8 +152,8 @@ func (sv *Server) adminFiles(w http.ResponseWriter, r *http.Request) {
 			"ready_at":      f.ReadyAt,
 			"parts":         partList,
 			// Boşluk/#/özel karakter içeren adlar linki kırmasın diye URL-encode edilir.
-			// Download'lar doğrudan orfi sunucusuna gider (Cloudflare büyük dosyaları keser).
-			"download_url":  sv.publicBase() + "/api/download/" + f.Token + "/" + url.PathEscape(f.OriginalName),
+			// Taban: boyut eşiğine göre Cloudflare'li veya Cloudflare'sız (bkz. downloadBase).
+			"download_url":  sv.downloadBase(f.Size) + "/api/download/" + f.Token + "/" + url.PathEscape(f.OriginalName),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": out, "total": total})

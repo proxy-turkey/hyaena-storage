@@ -8,15 +8,27 @@ import (
 )
 
 // appConfig, frontend'in ihtiyaç duyduğu yapılandırmayı döndürür.
-// public_base_url: paylaşım linklerinin tabanı (download'lar doğrudan orfi
-// sunucusuna gider — Cloudflare büyük dosyaları keser).
+//
+// İki taban URL vardır:
+//   - public_base_url: Cloudflare cache'li (storage.hyaena.co.uk) — küçük
+//     dosyalar buradan servis edilir (egress bypass).
+//   - direct_base_url: Cloudflare'sız (direct.hyaena.co.uk:8080) — büyük
+//     dosyalar buradan (Cloudflare büyük stream'leri kestiği için).
+//
+// Frontend linki dosya boyutuna göre seçer (bkz. sizeThresholdBytes).
 func (sv *Server) appConfig(w http.ResponseWriter, r *http.Request) {
-	base := sv.s.PublicBaseURL
-	if base == "" {
-		base = "https://" + r.Host
+	pub := sv.s.PublicBaseURL
+	if pub == "" {
+		pub = "https://" + r.Host
+	}
+	dir := sv.s.DirectBaseURL
+	if dir == "" {
+		dir = pub
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"public_base_url": base,
+		"public_base_url":    pub,
+		"direct_base_url":    dir,
+		"size_threshold":     sv.s.DirectThresholdBytes,
 	})
 }
 

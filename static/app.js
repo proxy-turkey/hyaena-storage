@@ -6,15 +6,26 @@
   const dropzone = $("dropzone");
   const fileInput = $("file-input");
 
-  // Paylaşım linki tabanı: sunucudan alınır (download'lar doğrudan orfi
-  // sunucusuna gider — Cloudflare büyük dosyaları keser). Yoksa location.origin.
+  // Paylaşım linki tabanları: sunucudan alınır.
+  //  - publicBaseUrl (Cloudflare cache'li) — küçük dosyalar, egress bypass
+  //  - directBaseUrl  (Cloudflare'sız)     — büyük dosyalar, kesintisiz
+  // Eşik: sizeThresholdBytes üstü direct, altı public.
   let publicBaseUrl = location.origin;
+  let directBaseUrl = location.origin;
+  let sizeThreshold = 480 * 1024 * 1024;
   fetch("/api/config")
     .then((r) => r.json())
     .then((d) => {
       if (d.public_base_url) publicBaseUrl = d.public_base_url;
+      if (d.direct_base_url) directBaseUrl = d.direct_base_url;
+      if (d.size_threshold > 0) sizeThreshold = d.size_threshold;
     })
     .catch(() => {});
+
+  // Dosya boyutuna göre download linki üretir.
+  function downloadBase(fileSize) {
+    return fileSize > sizeThreshold ? directBaseUrl : publicBaseUrl;
+  }
 
   // Kuyruk: aynı anda en fazla MAX_CONCURRENT dosya yüklenir.
   const MAX_CONCURRENT = 2;
@@ -211,7 +222,7 @@
               setP2(100);
               $("p2-label").textContent = "Buluta dağıtıldı ✓";
               item.status = "done";
-              item.link = `${publicBaseUrl}/api/download/${item.token}/${encodeURIComponent(item.safeName)}`;
+              item.link = `${downloadBase(item.file.size)}/api/download/${item.token}/${encodeURIComponent(item.safeName)}`;
               renderQueue();
               itemDone(item);
               resolve();
@@ -351,6 +362,7 @@
         $("p1-label").textContent = "Sunucu indirdi ✓";
         item.token = d.token;
         if (d.name) item.safeName = d.name;
+        if (d.size) item.file.size = d.size;
         return pollStatus(item);
       })
       .catch((e) => {
