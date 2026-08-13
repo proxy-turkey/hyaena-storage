@@ -3,16 +3,42 @@ package tgworker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
 
 	"github.com/proxy-turkey/hyaena-storage/internal/storage"
 )
 
 // DownloadSegment, parçayı Telegram'dan indirip w'e akışkan yazar.
+// FILE_REFERENCE_EXPIRED hatası alırsa parçayı OTOMATİK resync edip yeniden
+// dener — kullanıcı "dosya indirilemiyor" hatası görmeden çözülür.
 func (s *Service) DownloadSegment(ctx context.Context, part storage.Part, w io.Writer) error {
+	err := s.downloadOnce(ctx, part, w)
+	if err == nil {
+		return nil
+	}
+	if !isFileRefExpired(err) {
+		return err
+	}
+	// Reference süresi dolmuş → otomatik resync + tekrar dene (en fazla 1 kez)
+	log.Printf("FILE_REFERENCE_EXPIRED (part=%d), otomatik resync yapılıyor", part.ID)
+	if ok, _ := s.ResyncPart(ctx, part.ID); !ok {
+		return err
+	}
+	fresh, gerr := s.db.GetPartByID(part.ID)
+	if gerr != nil || fresh == nil {
+		return err
+	}
+	return s.downloadOnce(ctx, *fresh, w)
+}
+
+// downloadOnce, parçayı blob'undan çözüp Telegram'dan indirir.
+func (s *Service) downloadOnce(ctx context.Context, part storage.Part, w io.Writer) error {
 	if err := s.apiGuard(ctx); err != nil {
 		return err
 	}
@@ -31,6 +57,29 @@ func (s *Service) DownloadSegment(ctx context.Context, part storage.Part, w io.W
 	}
 	_, err := s.dl.Download(s.api, loc).WithThreads(4).Stream(ctx, w)
 	return err
+}
+
+// isFileRefExpired, hatanın FILE_REFERENCE_EXPIRED (veya benzeri) olup
+// olmadığını döndürür. gotd tgerr ile kod çözülür; bazı durumlarda raw
+// mesajda "FILE_REFERENCE" geçer.
+func isFileRefExpired(err error) bool {
+	if err == nil {
+		return false
+	}
+	var rpcErr *tgerr.Error
+	if errors.As(err, &rpcErr) {
+		code := rpcErr.Code
+		msg := rpcErr.Message
+		if code == 400 && (msg == "FILE_REFERENCE_EXPIRED" || msg == "FILE_REFERENCE_" || msg == "FILE_REFERENCE_EXPIRED_2" ||
+			msg == "FILE_PART_1" || msg == "FILE_PART_2" || msg == "FILE_PART_MISSING") {
+			return true
+		}
+		// FILE_REFERENCE prefix'i içeren mesajlar
+		if code == 400 && len(msg) >= 5 && msg[:5] == "FILE_" {
+			return true
+		}
+	}
+	return false
 }
 
 // DeleteSegmentMessage, parçanın Telegram mesajını siler.

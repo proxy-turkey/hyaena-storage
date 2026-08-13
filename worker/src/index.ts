@@ -1,14 +1,12 @@
 /**
- * Hyaena Storage — Cloudflare Worker download proxy + edge cache.
+ * Hyaena Storage — Cloudflare Worker proxy + edge cache.
  *
- * Kullanıcı → Worker → Northflank origin → Telegram
+ * Kullanıcı → Worker → orfi.hyaena.qzz.io:8080 (VPS) → Telegram
  *
- * - İlk indirme Northflank'tan çekilir ve Cloudflare edge cache'ine yazılır.
- * - Sonraki aynı dosya indirmeleri Cloudflare edge'den servis edilir
- *   (Northflank egress'i bypass, R2 kullanılmaz — dosya içeriği Telegram'da kalır).
- *
- * Sadece /api/download/* (dosya stream) cache'lenir.
- * Diğer tüm istekler (health, admin, upload, frontend) passthrough — cache'lenmez.
+ * - Tüm istekler (index, upload, admin, download) orfi sunucusuna proxy'lenir.
+ * - /api/download/* (dosya stream) Cloudflare edge cache'ine yazılır → Northflank
+ *   egress yok, VPS egress'i de minimize (cache HIT'ler edge'den servis edilir).
+ * - Diğer istekler passthrough — cache'lenmez.
  */
 
 export interface Env {
@@ -21,25 +19,20 @@ const CACHEABLE = /^\/api\/download\/[^/]+\/[^/]+$/; // /api/download/{token}/{n
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const origin = env.ORIGIN_URL || "https://http--hyaena-storage--kkg797wpkmd9.code.run";
+    const origin = env.ORIGIN_URL || "http://orfi.hyaena.qzz.io:8080";
 
-    // Sadece dosya stream path'ini cache'le; meta (/api/download/{token}) ve diğerleri passthrough
-    // NOT: url.pathname decode edilmiş olur (%20 -> boşluk). Cache matcing için decode edilmiş path kullan,
-    // origin'e ise HAM (encoded) path gitmeli ki %20 korunsun.
+    // Sadece dosya stream path'ini cache'le; diğerleri passthrough
     const isCacheable = CACHEABLE.test(url.pathname);
     const cache = caches.default;
 
     if (isCacheable) {
-      // Cache-Control yoksa Worker Cache API doğal olarak cache'lemez; biz manuel cache kullanıyoruz
       const cached = await cache.match(request);
       if (cached) {
-        // cache hit — edge'den yanıt
         return cached;
       }
     }
 
     // Origin'e proxy isteği: HAM path korunarak (decode edilmemiş) gönderilir.
-    // request.url'un query'siz ham hali: url.pathname decode eder, bu yüzden raw'dan al.
     const rawPath = request.url.split("?")[0];
     const originUrl = origin + rawPath + url.search;
     const originReq = new Request(originUrl, request);
@@ -53,9 +46,7 @@ export default {
 
     // Başarılı dosya yanıtını cache'le (cache miss, 200)
     if (isCacheable && response.ok) {
-      // response.body'yi koru; stream'i cache'e yaz ve kullanıcıya yeni bir stream ver
       const clone = response.clone();
-      // Cache-Control: indirilen dosya kalıcı; uzun TTL
       const headers = new Headers(clone.headers);
       headers.set("Cache-Control", `public, max-age=${env.CACHE_TTL || "2592000"}`);
       const cacheable = new Response(clone.body, {
@@ -63,10 +54,8 @@ export default {
         statusText: clone.statusText,
         headers,
       });
-      // Doğru cache key: origin URL + query, method GET
       const cacheKey = new Request(originUrl, { method: "GET" });
       ctx.waitUntil(cache.put(cacheKey, cacheable));
-      // Origin yanıtına da Cache-Control ekle (davranış tutarlılığı)
       const outHeaders = new Headers(response.headers);
       outHeaders.set("Cache-Control", `public, max-age=${env.CACHE_TTL || "2592000"}`);
       return new Response(response.body, {

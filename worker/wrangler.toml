@@ -2,12 +2,12 @@ name = "hyaena-storage-download"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
-# Origin: Northflank otomatik domain
+# Origin: orfi VPS (app 8080'de)
 [vars]
-ORIGIN_URL = "https://http--hyaena-storage--kkg797wpkmd9.code.run"
+ORIGIN_URL = "http://orfi.hyaena.qzz.io:8080"
 CACHE_TTL = "2592000"  # 30 gün
 
-# Sadece download path'lerini Worker'a yönlendir (diğerleri Cloudflare'dan Northflank'a gider)
+# Tüm domain Worker'dan geçer (index/upload/admin/download → orfi VPS)
 routes = [
-  { pattern = "storage.hyaena.co.uk/api/download/*", zone_name = "hyaena.co.uk" }
+  { pattern = "storage.hyaena.co.uk/*", zone_name = "hyaena.co.uk" }
 ]
