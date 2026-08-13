@@ -35,6 +35,12 @@ type Settings struct {
 	Port int
 	RateLimitPerMin int
 
+	// PublicBaseURL: paylaşım linklerinde kullanılacak dış taban URL.
+	// Cloudflare cache'i büyük dosyaları kestiği için, download'lar doğrudan
+	// orfi sunucusuna (direct.hyaena.co.uk:8080) gider. Boşsa request origin'i
+	// kullanılır (eski davranış).
+	PublicBaseURL string
+
 	DatabaseURL string // Supabase/Postgres connection string
 	TmpRoot     string
 
@@ -223,6 +229,7 @@ func Load(root string) (*Settings, error) {
 	s.RateLimitPerMin = getInt("RATE_LIMIT_PER_MIN", s.RateLimitPerMin)
 	s.DatabaseURL = getStr("DATABASE_URL", "", "")
 	s.TmpRoot = getStr("TMP_ROOT", "", s.TmpRoot)
+	s.PublicBaseURL = getStr("PUBLIC_BASE_URL", "", "")
 	s.CFZoneID = getStr("CF_ZONE_ID", "", "")
 	s.CFAPIKey = getStr("CF_API_KEY", "", "")
 	s.CFAPIEmail = getStr("CF_API_EMAIL", "", "")

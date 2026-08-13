@@ -115,6 +115,9 @@ func New(ctx context.Context, s *config.Settings, store *storage.Store, tw tgwor
 	r.Get("/download/{token}/{name}", sv.legacyDownload)
 
 	r.Route("/api", func(api chi.Router) {
+		// açık config (frontend link tabanı)
+		api.Get("/config", sv.appConfig)
+
 		// açık upload (rate-limited)
 		api.With(sv.rateLimit).Post("/upload/start", sv.uploadStart)
 		api.With(sv.rateLimit).Post("/upload/by-url", sv.uploadByURL)

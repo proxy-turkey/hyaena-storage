@@ -7,6 +7,19 @@ import (
 	"time"
 )
 
+// appConfig, frontend'in ihtiyaç duyduğu yapılandırmayı döndürür.
+// public_base_url: paylaşım linklerinin tabanı (download'lar doğrudan orfi
+// sunucusuna gider — Cloudflare büyük dosyaları keser).
+func (sv *Server) appConfig(w http.ResponseWriter, r *http.Request) {
+	base := sv.s.PublicBaseURL
+	if base == "" {
+		base = "https://" + r.Host
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"public_base_url": base,
+	})
+}
+
 func (sv *Server) health(w http.ResponseWriter, r *http.Request) {
 	ready := false
 	if sv.tw != nil {

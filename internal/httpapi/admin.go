@@ -95,6 +95,12 @@ func (sv *Server) adminCreateChannel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"created": true})
 }
 
+// publicBase, download linklerinin tabanını döndürür. Config'te PublicBaseURL
+// varsa mutlak URL, yoksa boş string (göreceli /api/download/... — eski davranış).
+func (sv *Server) publicBase() string {
+	return sv.s.PublicBaseURL
+}
+
 func (sv *Server) adminFiles(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 100 {
@@ -141,7 +147,8 @@ func (sv *Server) adminFiles(w http.ResponseWriter, r *http.Request) {
 			"ready_at":      f.ReadyAt,
 			"parts":         partList,
 			// Boşluk/#/özel karakter içeren adlar linki kırmasın diye URL-encode edilir.
-			"download_url":  "/api/download/" + f.Token + "/" + url.PathEscape(f.OriginalName),
+			// Download'lar doğrudan orfi sunucusuna gider (Cloudflare büyük dosyaları keser).
+			"download_url":  sv.publicBase() + "/api/download/" + f.Token + "/" + url.PathEscape(f.OriginalName),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": out, "total": total})

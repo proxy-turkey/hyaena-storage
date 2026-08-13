@@ -6,6 +6,16 @@
   const dropzone = $("dropzone");
   const fileInput = $("file-input");
 
+  // Paylaşım linki tabanı: sunucudan alınır (download'lar doğrudan orfi
+  // sunucusuna gider — Cloudflare büyük dosyaları keser). Yoksa location.origin.
+  let publicBaseUrl = location.origin;
+  fetch("/api/config")
+    .then((r) => r.json())
+    .then((d) => {
+      if (d.public_base_url) publicBaseUrl = d.public_base_url;
+    })
+    .catch(() => {});
+
   // Kuyruk: aynı anda en fazla MAX_CONCURRENT dosya yüklenir.
   const MAX_CONCURRENT = 2;
   let queue = []; // { file, status:'waiting'|'uploading'|'done'|'failed', token, safeName, partCount, segmentBytes, xhr, error }
@@ -201,7 +211,7 @@
               setP2(100);
               $("p2-label").textContent = "Buluta dağıtıldı ✓";
               item.status = "done";
-              item.link = `${location.origin}/api/download/${item.token}/${encodeURIComponent(item.safeName)}`;
+              item.link = `${publicBaseUrl}/api/download/${item.token}/${encodeURIComponent(item.safeName)}`;
               renderQueue();
               itemDone(item);
               resolve();
