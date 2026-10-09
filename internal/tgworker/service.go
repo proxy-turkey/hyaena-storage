@@ -47,6 +47,7 @@ type Service struct {
 
 	entityCache map[int64]*tg.InputPeerChannel
 	progress    *ProgressStore
+	flood       *floodTracker
 }
 
 // New, Telegram worker'ı oluşturur.
@@ -57,6 +58,7 @@ func New(s *config.Settings, db *storage.Store) *Service {
 		readyCh:     make(chan struct{}),
 		entityCache: map[int64]*tg.InputPeerChannel{},
 		progress:    NewProgressStore(),
+		flood:       &floodTracker{},
 	}
 }
 

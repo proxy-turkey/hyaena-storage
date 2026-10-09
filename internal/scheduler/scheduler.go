@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -60,9 +61,49 @@ func Start(hour int, tw *tgworker.Service, store *storage.Store, tmpRoot string)
 		log.Printf("Cron kaydı başarısız (referans tazeleme): %v", err)
 	}
 
+	// her 15 dakikada disk doluluk kontrolü (B-04): %85 üstünde sahibi
+	// Telegram'dan uyarılır; sessiz kalması için uyarı günde bir kez yinelenir.
+	if _, err := c.AddFunc("*/15 * * * *", func() {
+		checkDisk(tw, "/")
+	}); err != nil {
+		log.Printf("Cron kaydı başarısız (disk kontrol): %v", err)
+	}
+
 	c.Start()
-	log.Printf("Zamanlayıcı başladı: her gün %02d:00'da +1 kanal, %02d:00'da referans tazeleme; süresi dolan dosyalar her dakika, tmp her 15 dk temizlenir", hour, (hour+1)%24)
+	log.Printf("Zamanlayıcı başladı: her gün %02d:00'da +1 kanal, %02d:00'da referans tazeleme; süresi dolan dosyalar her dakika, tmp her 15 dk, disk kontrolü her 15 dk yapılır", hour, (hour+1)%24)
 	return c
+}
+
+// diskAlertState, uyarı tekrarını günde bir ile sınırlar; disk %80 altına
+// inince sıfırlanır (düzelen durumda tekrar haber verilebilsin).
+var diskAlertState struct {
+	lastAlert time.Time
+	alerting  bool
+	mu        sync.Mutex
+}
+
+// checkDisk, kök dosya sisteminin doluluğunu ölçer; eşik ihlalinde sahibi
+// uyarır (B-04). Telegram worker hazır değilse yalnızca loglanır.
+func checkDisk(tw *tgworker.Service, path string) {
+	pct, err := core.DiskUsagePct(path)
+	if err != nil {
+		return
+	}
+	diskAlertState.mu.Lock()
+	defer diskAlertState.mu.Unlock()
+	if pct >= 85 {
+		if !diskAlertState.alerting || time.Since(diskAlertState.lastAlert) > 24*time.Hour {
+			log.Printf("DİSK UYARISI: %s doluluk %%%.1f (eşik 85)", path, pct)
+			if tw != nil {
+				go tw.NotifyOwnerBestEffort(fmt.Sprintf(
+					"⚠️ Hyaena Storage: disk doluluğu %%%.0f (eşik %%85). Yer açın; disk dolarsa upload ve DB yazma durur.", pct))
+			}
+			diskAlertState.alerting = true
+			diskAlertState.lastAlert = time.Now()
+		}
+	} else if pct < 80 {
+		diskAlertState.alerting = false
+	}
 }
 
 // refreshReferences, tüm yüklenmiş parçaların file_reference'ını mesaj id'lerinden

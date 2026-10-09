@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"net/http"
 	"time"
+
+	"github.com/proxy-turkey/hyaena-storage/internal/core"
 )
 
 // appConfig, frontend'in ihtiyaç duyduğu yapılandırmayı döndürür.
@@ -41,7 +43,12 @@ func (sv *Server) health(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "telegram_ready": ready})
+	resp := map[string]any{"ok": true, "telegram_ready": ready}
+	// disk doluluk (B-04): dış izleme araçları eşik ihlalini buradan görsün
+	if pct, err := core.DiskUsagePct("/"); err == nil {
+		resp["disk_pct"] = int(pct)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (sv *Server) index(w http.ResponseWriter, r *http.Request) {

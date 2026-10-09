@@ -17,10 +17,49 @@ export interface Env {
 
 const CACHEABLE = /^\/api\/download\/[^/]+\/[^/]+$/; // /api/download/{token}/{name}
 
+// ---- Dış sağlık izleme durumu (B-02 L3): cron 5 dk'da bir origin'i yoklar ----
+// Per-isolate globaldir (worker izoleleri bağımsız); en güncel durumu yansıtır.
+let healthState = {
+  last_check: null as string | null,
+  last_ok: null as string | null,
+  consecutive_failures: 0,
+};
+
 export default {
+  async scheduled(_event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+    const origin = env.ORIGIN_URL || "http://orfi.hyaena.qzz.io:8080";
+    try {
+      const r = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(10000) });
+      healthState.last_check = new Date().toISOString();
+      if (r.ok) {
+        healthState.last_ok = healthState.last_check;
+        if (healthState.consecutive_failures >= 3) {
+          console.log(`Origin KURTARDI: ${healthState.consecutive_failures} başarısızlık sonrası ${healthState.last_check}`);
+        }
+        healthState.consecutive_failures = 0;
+      } else {
+        healthState.consecutive_failures++;
+        console.error(`Origin sağlık kontrolü HTTP ${r.status} (${healthState.consecutive_failures} art arda)`);
+      }
+    } catch (e) {
+      healthState.last_check = new Date().toISOString();
+      healthState.consecutive_failures++;
+      console.error(`Origin sağlık kontrolü hatası: ${e} (${healthState.consecutive_failures} art arda)`);
+    }
+  },
+
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const origin = env.ORIGIN_URL || "http://orfi.hyaena.qzz.io:8080";
+
+    // Origin tamamen ölse bile durumu dışarıdan görebilmek için (B-02 L3).
+    // Bu uç nokta origin'e proxy edilmez — worker kendi belleğinden cevaplar.
+    if (url.pathname === "/__health-status") {
+      return Response.json({
+        ...healthState,
+        healthy: healthState.consecutive_failures === 0 && healthState.last_ok !== null,
+      }, { headers: { "Cache-Control": "no-store" } });
+    }
 
     // Sadece dosya stream path'ini cache'le; diğerleri passthrough
     const isCacheable = CACHEABLE.test(url.pathname);

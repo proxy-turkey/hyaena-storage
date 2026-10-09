@@ -152,6 +152,7 @@ func New(ctx context.Context, s *config.Settings, store *storage.Store, tw tgwor
 		api.Group(func(a chi.Router) {
 			a.Use(sv.requireAdmin)
 			a.Use(adminOriginGuard)
+			a.Use(sv.adminChannelGuard)
 			a.Get("/admin/summary", sv.adminSummary)
 			a.Get("/admin/channels", sv.adminChannels)
 			a.Post("/admin/channels/create-now", sv.adminCreateChannel)

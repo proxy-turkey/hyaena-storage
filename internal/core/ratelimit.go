@@ -94,8 +94,9 @@ func mustParseCIDRs(specs []string) []*net.IPNet {
 	return out
 }
 
-// isCloudflareIP, IP'nin Cloudflare uç aralıklarında olup olmadığını döndürür.
-func isCloudflareIP(ip net.IP) bool {
+// IsCloudflareIP, IP'nin Cloudflare uç aralıklarında olup olmadığını döndürür.
+// (httpapi'nin direct-origin admin guard'ı da kullanır — bkz. B-06.)
+func IsCloudflareIP(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
@@ -107,8 +108,8 @@ func isCloudflareIP(ip net.IP) bool {
 	return false
 }
 
-// remoteIP, TCP seviyesindeki gerçek eş adresini döndürür ( RemoteAddr).
-func remoteIP(r *http.Request) string {
+// RemoteIP, TCP seviyesindeki gerçek eş adresini döndürür (RemoteAddr).
+func RemoteIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -124,8 +125,8 @@ func remoteIP(r *http.Request) string {
 // bağlanan istemciler için başlıklar yok sayılır ve RemoteAddr esas alınır —
 // aksi halde XFF sahtelemekle per-IP rate limit atlanabilirdi.
 func ClientIP(r *http.Request) string {
-	peer := remoteIP(r)
-	if isCloudflareIP(net.ParseIP(peer)) {
+	peer := RemoteIP(r)
+	if IsCloudflareIP(net.ParseIP(peer)) {
 		if cip := r.Header.Get("CF-Connecting-IP"); cip != "" {
 			return cip
 		}

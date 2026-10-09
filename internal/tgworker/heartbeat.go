@@ -1,6 +1,7 @@
 package tgworker
 
 import (
+	"fmt"
 	"context"
 	"log"
 	"time"
@@ -46,6 +47,12 @@ func (s *Service) RunHeartbeat(ctx context.Context, interval time.Duration, maxF
 			failures++
 			log.Printf("Telegram heartbeat HATA (%d/%d): %v", failures, maxFailures, err)
 			if failures >= maxFailures {
+				// Kapanmadan önce sahibi uyar (L2 izleme, B-02): heartbeat kendi
+				// kendini iyileştirir ama insan da haberdar olmalı.
+				s.NotifyOwnerBestEffort(fmt.Sprintf(
+					"⚠️ Hyaena Storage: Telegram bağlantısı %d kez üst üste başarısız (%v). "+
+						"Süreç yeniden başlatılıyor; durum tekrarlanırsa müdahale gerekir.",
+					failures, err))
 				log.Fatalf("Telegram heartbeat: %d üst üste hata — süreç bilinçli olarak kapatılıyor (systemd yeniden başlataracak)", failures)
 			}
 		}

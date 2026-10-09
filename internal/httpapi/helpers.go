@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"net"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -77,6 +78,30 @@ func (sv *Server) loginLimit(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// adminChannelGuard, admin API'yi yalnızca Cloudflare üzerinden (TLS) veya
+// VPS yerelinden (127.0.0.1 bakımı) erişilebilir kılar (B-06). Doğrudan
+// origin'e (direct.hyaena.co.uk:8080, şifresiz HTTP) gelen admin istekleri
+// 403 alır — admin cookie'si açık ağda dinlenemesin. Karar TCP seviyesindeki
+// eş adresinden verilir; X-Forwarded-For'a güvenilmez (spoof'a kapalı).
+func (sv *Server) adminChannelGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if sv.s.AdminAllowDirect {
+			next.ServeHTTP(w, r)
+			return
+		}
+		peer := net.ParseIP(core.RemoteIP(r))
+		if peer == nil {
+			writeErr(w, http.StatusForbidden, "Yasak kanal")
+			return
+		}
+		if peer.IsLoopback() || core.IsCloudflareIP(peer) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeErr(w, http.StatusForbidden, "Admin paneli yalnızca https://storage.hyaena.co.uk üzerinden erişilebilir")
 	})
 }
 

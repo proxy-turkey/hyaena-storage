@@ -54,14 +54,24 @@ func (sv *Server) adminSummary(w http.ResponseWriter, r *http.Request) {
 	totalBytes, _ := sv.store.StorageUsage()
 	todayFiles, _ := sv.store.CountFilesToday()
 	chs, _ := sv.store.ListChannels()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"total_files":    totalFiles,
-		"total_bytes":    totalBytes,
-		"today_files":    todayFiles,
-		"channels_count": len(chs),
-		"segment_bytes":  sv.s.SegmentBytes,
+	resp := map[string]any{
+		"total_files":      totalFiles,
+		"total_bytes":      totalBytes,
+		"today_files":      todayFiles,
+		"channels_count":   len(chs),
+		"segment_bytes":    sv.s.SegmentBytes,
 		"max_upload_bytes": sv.s.MaxUploadBytes,
-	})
+	}
+	// B-07: Telegram hesap limit göstergeleri (24s FloodWait istatistiği)
+	if sv.tw != nil {
+		if n, last := sv.tw.FloodWaitStats(); n > 0 {
+			resp["floodwait_24h"] = n
+			resp["floodwait_last_sec"] = int(last.Seconds())
+		} else {
+			resp["floodwait_24h"] = 0
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (sv *Server) adminChannels(w http.ResponseWriter, r *http.Request) {

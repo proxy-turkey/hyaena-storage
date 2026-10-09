@@ -3,6 +3,7 @@ package tgworker
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/proxy-turkey/hyaena-storage/internal/storage"
 )
@@ -36,4 +37,9 @@ type Worker interface {
 
 	// GetMe, oturum bilgisini döndürür.
 	GetMe(ctx context.Context) (map[string]string, error)
+
+	// FloodWaitStats, son 24s FloodWait sayısı ve son bekleme süresi (B-07).
+	FloodWaitStats() (int, time.Duration)
+	// NotifyOwnerBestEffort, hesap sahibine en iyi şekilde uyarı gönderir (B-02).
+	NotifyOwnerBestEffort(text string)
 }

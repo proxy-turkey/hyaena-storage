@@ -54,10 +54,16 @@ type Settings struct {
 	DatabaseURL string // Supabase/Postgres connection string
 	TmpRoot     string
 
-	// Cloudflare cache purge (dosya silinince Worker cache'ten düşsün)
-	CFZoneID  string
-	CFAPIKey  string
+	// Cloudflare cache purge (dosya silinince Worker cache'ten düşsün).
+	// CFAPIToken tercih edilir (scoped, Bearer); Global Key yalnızca fallback.
+	CFZoneID   string
+	CFAPIKey   string
 	CFAPIEmail string
+	CFAPIToken string
+
+	// AdminAllowDirect: true ise admin paneli CF'sız doğrudan origin'den de
+	// açılır (yalnızca geliştirme; üretimde HTTP cookie dinleme riski — B-06).
+	AdminAllowDirect bool
 
 	// Northflank metrics (egress izleme)
 	NFToken     string
@@ -246,6 +252,8 @@ func Load(root string) (*Settings, error) {
 	s.CFZoneID = getStr("CF_ZONE_ID", "", "")
 	s.CFAPIKey = getStr("CF_API_KEY", "", "")
 	s.CFAPIEmail = getStr("CF_API_EMAIL", "", "")
+	s.CFAPIToken = getStr("CF_API_TOKEN", "", "")
+	s.AdminAllowDirect = getStr("ADMIN_ALLOW_DIRECT", "", "") == "true"
 	s.NFToken = getStr("NORTHFLANK_TOKEN", "", "")
 	s.NFProject = getStr("NORTHFLANK_PROJECT", "hyaena", "")
 	s.NFService = getStr("NORTHFLANK_SERVICE", "hyaena-storage", "")

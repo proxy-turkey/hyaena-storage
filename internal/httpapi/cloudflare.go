@@ -13,7 +13,7 @@ import (
 // Dosya silinince cache'te kalmaması için admin delete'e entegre edilir.
 func (sv *Server) purgeCacheFile(fileURL string) {
 	s := sv.s
-	if s.CFZoneID == "" || s.CFAPIKey == "" {
+	if s.CFZoneID == "" || (s.CFAPIToken == "" && s.CFAPIKey == "") {
 		return // Cloudflare purge yapılandırılmamış
 	}
 	body, _ := json.Marshal(map[string]any{"files": []string{fileURL}})
@@ -25,9 +25,15 @@ func (sv *Server) purgeCacheFile(fileURL string) {
 	if err != nil {
 		return
 	}
-	req.Header.Set("X-Auth-Email", s.CFAPIEmail)
-	req.Header.Set("X-Auth-Key", s.CFAPIKey)
 	req.Header.Set("Content-Type", "application/json")
+	// Scoped API token tercih edilir (Bearer); Global Key yalnızca fallback —
+	// kimlik bilgisi hijyeni (B-03): token tek amaca (cache purge) kısıtlı.
+	if s.CFAPIToken != "" {
+		req.Header.Set("Authorization", "Bearer "+s.CFAPIToken)
+	} else {
+		req.Header.Set("X-Auth-Email", s.CFAPIEmail)
+		req.Header.Set("X-Auth-Key", s.CFAPIKey)
+	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)

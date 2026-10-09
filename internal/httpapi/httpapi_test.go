@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"time"
 	"context"
 	"encoding/json"
 	"io"
@@ -77,6 +78,10 @@ func (s *stubWorker) GetMe(ctx context.Context) (map[string]string, error) {
 	return map[string]string{"first_name": "Test", "username": "t"}, nil
 }
 
+func (s *stubWorker) FloodWaitStats() (int, time.Duration) { return 0, 0 }
+
+func (s *stubWorker) NotifyOwnerBestEffort(text string) {}
+
 // testDBURL, Supabase DSN'sine izole test şeması ekler.
 // Gerçek veritabanı bozulmaz; _test şemasındaki tablolar kullanılır.
 func testDBURL() string {
@@ -149,6 +154,8 @@ func (fsFile) Close() error               { return nil }
 func doReq(t *testing.T, h http.Handler, method, path string, body io.Reader, cookies []*http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, body)
+	// adminChannelGuard loopback'e izin verir; testler yerel erişimi simüle eder
+	req.RemoteAddr = "127.0.0.1:54321"
 	for _, c := range cookies {
 		req.AddCookie(c)
 	}
