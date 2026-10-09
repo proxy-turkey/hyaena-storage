@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"net/http"
@@ -101,6 +102,34 @@ func (sv *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Eşzamanlı indirme sınırı: ilk parça bellekte tutulduğu için sınırsız
+	// eşzamanlılık küçük RAM'de OOM yapabilir. Semafor tüm akış boyunca tutulur.
+	if sv.dlSem != nil {
+		select {
+		case sv.dlSem <- struct{}{}:
+			defer func() { <-sv.dlSem }()
+		default:
+			writeErr(w, http.StatusServiceUnavailable, "Çok fazla eşzamanlı indirme, birazdan tekrar dene")
+			return
+		}
+	}
+
+	// İlk parçayı başlıklardan ÖNCE belleğe indir (segment ≤ 20 MB): parçanın
+	// file reference'ı süresi dolmuşsa resync bu aşamada tamamlanır. Böylece
+	// istemciye asla 200 + boş gövde gitmez — Cloudflare edge boş 200'leri
+	// 30 gün cache'lediği için bu, kalıcı kırık indirmelere yol açıyordu.
+	var first []byte
+	{
+		var buf bytes.Buffer
+		if err := sv.tw.DownloadSegment(r.Context(), parts[0], &buf); err != nil {
+			log.Printf("Download ilk parça hatası (file=%d token=%s part=%d/%d): %v",
+				f.ID, f.Token, parts[0].PartIndex, f.PartCount, err)
+			writeErr(w, http.StatusBadGateway, "Dosya Telegram'dan alınamadı")
+			return
+		}
+		first = buf.Bytes()
+	}
+
 	mime := f.Mime
 	if mime == "" {
 		mime = "application/octet-stream"
@@ -128,7 +157,14 @@ func (sv *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		fl.Flush()
 	}
 
-	for _, p := range parts {
+	// ilk parça zaten bellekte; doğrudan yaz ve kalanları akıt
+	if _, err := fw.Write(first); err != nil {
+		return
+	}
+	if fl != nil {
+		fl.Flush()
+	}
+	for _, p := range parts[1:] {
 		if err := sv.tw.DownloadSegment(r.Context(), p, fw); err != nil {
 			// akış başladıktan sonra status gönderilemez; bağlantıyı kes
 			log.Printf("DownloadSegment hatası (file=%d token=%s part=%d/%d): %v",

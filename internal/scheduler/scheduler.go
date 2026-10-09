@@ -50,9 +50,49 @@ func Start(hour int, tw *tgworker.Service, store *storage.Store, tmpRoot string)
 		log.Printf("Cron kaydı başarısız (tmp temizlik): %v", err)
 	}
 
+	// her gün referans tazeleme: Telegram file_reference'ları ~günler içinde
+	// bayatlar; bayat parça ilk indirmede resync gerektirir (yavaşlama/kesilme).
+	// Kanal işinden 1 saat sonra çalışır, tüm parçaları sırayla tazeler.
+	refreshExpr := fmt.Sprintf("0 %d * * *", (hour+1)%24)
+	if _, err := c.AddFunc(refreshExpr, func() {
+		refreshReferences(tw, store)
+	}); err != nil {
+		log.Printf("Cron kaydı başarısız (referans tazeleme): %v", err)
+	}
+
 	c.Start()
-	log.Printf("Zamanlayıcı başladı: her gün %02d:00'da +1 kanal; süresi dolan dosyalar her dakika, tmp her 15 dk temizlenir", hour)
+	log.Printf("Zamanlayıcı başladı: her gün %02d:00'da +1 kanal, %02d:00'da referans tazeleme; süresi dolan dosyalar her dakika, tmp her 15 dk temizlenir", hour, (hour+1)%24)
 	return c
+}
+
+// refreshReferences, tüm yüklenmiş parçaların file_reference'ını mesaj id'lerinden
+// tazeler. ResyncPart parça başına tek ucuz RPC yapar (ChannelsGetMessages).
+func refreshReferences(tw *tgworker.Service, store *storage.Store) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+	parts, err := store.ListUploadedParts()
+	if err != nil {
+		log.Printf("Referans tazeleme: parçalar okunamadı: %v", err)
+		return
+	}
+	ok, skip := 0, 0
+	for _, p := range parts {
+		if ctx.Err() != nil {
+			break
+		}
+		done, err := tw.ResyncPart(ctx, p.ID)
+		if err != nil {
+			log.Printf("Referans tazeleme hatası (part=%d): %v", p.ID, err)
+			skip++
+			continue
+		}
+		if done {
+			ok++
+		} else {
+			skip++
+		}
+	}
+	log.Printf("Referans tazeleme tamam: %d tazelendi, %d atlandı", ok, skip)
 }
 
 // sweepTmp, geçici upload dizinlerini temizler (volume asla dolmasın).

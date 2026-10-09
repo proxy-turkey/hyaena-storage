@@ -6,7 +6,8 @@
  * - Tüm istekler (index, upload, admin, download) orfi sunucusuna proxy'lenir.
  * - /api/download/* (dosya stream) Cloudflare edge cache'ine yazılır → Northflank
  *   egress yok, VPS egress'i de minimize (cache HIT'ler edge'den servis edilir).
- * - Diğer istekler passthrough — cache'lenmez.
+ * - Hata yanıtları (404/5xx) cache'lenmez ve no-store ile işaretlenir —
+ *   hazır olmayan dosyanın 404'ü edge'e negatif cache yazılmasın.
  */
 
 export interface Env {
@@ -32,9 +33,9 @@ export default {
       }
     }
 
-    // Origin'e proxy isteği: HAM path korunarak (decode edilmemiş) gönderilir.
-    const rawPath = request.url.split("?")[0];
-    const originUrl = origin + rawPath + url.search;
+    // Origin'e proxy isteği. url.pathname percent-encoding'i korur (decode
+    // etmez) — %20'li dosya adları origin'e HAM halde ulaşır.
+    const originUrl = origin + url.pathname + url.search;
     const originReq = new Request(originUrl, request);
 
     let response: Response;
@@ -44,8 +45,21 @@ export default {
       return new Response(`Proxy error: ${e}`, { status: 502 });
     }
 
-    // Başarılı dosya yanıtını cache'le (cache miss, 200)
-    if (isCacheable && response.ok) {
+    // Hatalı yanıt: cacheleme yok, edge'in negatif cache'lemesini de engelle.
+    // (Örn. dosya henüz hazır değil → 404; hazır olunca indirilebilmeli.)
+    if (!response.ok) {
+      const headers = new Headers(response.headers);
+      headers.set("Cache-Control", "no-store");
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
+    }
+
+    // Başarılı dosya yanıtını cache'le (200). Cache anahtarı = gelen istek;
+    // match de put da aynı URL'yi kullanır.
+    if (isCacheable) {
       const clone = response.clone();
       const headers = new Headers(clone.headers);
       headers.set("Cache-Control", `public, max-age=${env.CACHE_TTL || "2592000"}`);
@@ -54,8 +68,7 @@ export default {
         statusText: clone.statusText,
         headers,
       });
-      const cacheKey = new Request(originUrl, { method: "GET" });
-      ctx.waitUntil(cache.put(cacheKey, cacheable));
+      ctx.waitUntil(cache.put(request, cacheable));
       const outHeaders = new Headers(response.headers);
       outHeaders.set("Cache-Control", `public, max-age=${env.CACHE_TTL || "2592000"}`);
       return new Response(response.body, {

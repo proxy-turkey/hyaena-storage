@@ -129,3 +129,24 @@ func (s *Store) RefreshPartBlob(partID int64, msgID int, blob []byte, dcID *int)
 	)
 	return err
 }
+
+// ListUploadedParts, Telegram'a yüklenmiş tüm parçaları döndürir
+// (günlük file_reference tazeleme işi için).
+func (s *Store) ListUploadedParts() ([]Part, error) {
+	rows, err := s.db.Query(
+		"SELECT " + partCols + " FROM parts WHERE status='uploaded' AND telegram_msg_id IS NOT NULL ORDER BY id",
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Part
+	for rows.Next() {
+		p, err := scanPart(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}
