@@ -23,9 +23,18 @@ type Server struct {
 	store *storage.Store
 	tw    tgworker.Worker
 	static fs.FS
-	ctx   context.Context // uygulama-ömürlü context (arka plan upload'ları için)
+	ctx    context.Context // uygulama-ömürlü context (arka plan upload'ları için)
 
 	fleetOnce sync.Once // EnsureFleet arka plan çağrısını tek seferlik yapar (goroutine sızıntısı önler)
+
+	// dlSem: eşzamanlı indirme sınırı (ilk parça bellekte tutulduğu için).
+	// nil ise sınırsız (test stub'ları).
+	dlSem chan struct{}
+
+	// finishMu + finishStarted: aynı token için finish'in iki kez arka plan
+	// upload başlatmasını önler (çift tıklama / yarış → Telegram'da eş mesaj).
+	finishMu       sync.Mutex
+	finishStarted  map[string]struct{}
 
 	adminLimiter *core.RateLimiter
 	uploadLimiter *core.RateLimiter
@@ -89,14 +98,17 @@ func New(ctx context.Context, s *config.Settings, store *storage.Store, tw tgwor
 		tw:           tw,
 		static:       static,
 		ctx:          ctx,
+		finishStarted: map[string]struct{}{},
 		adminLimiter: core.NewRateLimiter(s.RateLimitPerMin, 60),
 		uploadLimiter: core.NewRateLimiter(s.RateLimitPerMin, 60),
 		loginLimiter: core.NewRateLimiter(5, 60), // 5 login denemesi / dk
 	}
+	if s.MaxConcurrentDownloads > 0 {
+		sv.dlSem = make(chan struct{}, s.MaxConcurrentDownloads)
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.RealIP)
 	r.Use(securityHeaders)
 
 	r.Get("/health", sv.health)

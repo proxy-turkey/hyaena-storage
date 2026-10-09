@@ -64,14 +64,51 @@ systemctl --user status storage
 | Değişken | Varsayılan | Açıklama |
 |---|---|---|
 | `ADMIN_PASSWORD` | `degistir-ben` | Admin panel şifresi (**değiştir!**) |
+| `TELEGRAM_API_ID/HASH` | – | config.ini yerine env ile de verilebilir |
+| `SESSION_FILE` | `session` | Telegram oturum dosyası yolu |
 | `SEGMENT_BYTES` | `20971520` | Segment boyutu (20 MB) |
 | `MAX_UPLOAD_BYTES` | `107374182400` | Tek dosya limiti (100 GB) |
+| `MAX_CONCURRENT_DOWNLOADS` | `16` | Eşzamanlı indirme sınırı (RAM koruması) |
 | `BOOTSTRAP_CHANNELS` | `1` | İlk kurulumda açılacak kanal (yalnızca filo boşsa) |
 | `CHANNEL_INTERVAL_SN` | `90` | Kanal oluşturma arası (sn) |
-| `PORT` | `8021` | Web portu |
+| `HOST` / `PORT` | `0.0.0.0` / `8000` | Web arayüzü |
 | `RATE_LIMIT_PER_MIN` | `20` | Per-IP istek limiti |
+| `DATABASE_URL` | – | Postgres (Supabase) pooler bağlantısı |
+| `PUBLIC_BASE_URL` / `DIRECT_BASE_URL` | – | Paylaşım linki tabanları (CF cache'li / doğrudan) |
+| `DIRECT_THRESHOLD_BYTES` | `503316480` | Bu boyut üstü dosyalar direct tabandan |
+| `CF_ZONE_ID/EMAIL/KEY` | – | Dosya silinince edge cache purge |
 
 `config.ini`: Telegram `api_id`, `api_hash`, `two_fa_password`.
+
+## VPS dağıtımı (orfi)
+
+```bash
+# yerelde derle (VPS'te Go gerekmez)
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o tgshare .
+scp tgshare root@orfi:/opt/tgshare/tgshare
+ssh root@orfi systemctl restart tgshare
+```
+
+`/opt/tgshare/`: binary + `.env` + `session` + `data/`. systemd unit'i
+`Restart=always` ile kuruludur. Toprak: kullanıcı → Cloudflare Worker
+(`storage.hyaena.co.uk`, bkz. `worker/`) → VPS:8080 → Telegram. İndirmeler
+Worker üzerinden edge cache'lenir; 480 MB üstü linkler `direct.hyaena.co.uk`
+üzerinden Cloudflare'siz gider.
+
+## İşletimsel notlar
+
+- **Telegram heartbeat:** süreç her 5 dakikada canlı bir RPC atar; 3 üst üste
+  hata süreci kapatır ve systemd 5 sn'de taze başlatır. (Ekim 2026'daki
+  `CONNECTION_LAYER_INVALID` arızası — günlerce süren bellek-durumu çürümesi —
+  bu mekanizmayla dakikalar içinde iyileşirdi.)
+- **Referans tazeleme:** her gün 05:00'te tüm parçaların Telegram
+  `file_reference`'ı mesaj id'lerinden yenilenir (bayat referans = yavaş ilk
+  indirme).
+- **Rate limit güveni:** `X-Forwarded-For` yalnızca bağlantı Cloudflare
+  aralıklarından geliyorsa kabul edilir; doğrudan bağlanan istemcilerde gerçek
+  `RemoteAddr` esas alınır (spoof ile limit atlama kapalı).
+- **Worker deploy:** `cd worker && npx wrangler deploy` (cache anahtarı gelen
+  istektir; hata yanıtları `no-store` ile negatif cache'lenmez).
 
 ## API
 

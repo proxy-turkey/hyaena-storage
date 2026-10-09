@@ -58,11 +58,13 @@ func main() {
 	}
 	sweepOrphanTmp(cfg.TmpDir(), store, 24*time.Hour)
 
-	// Telegram worker
+	// Telegram worker + canlılık gözcüsü (RPC'ler ölürse süreç systemd ile
+	// taze başlar — bkz. tgworker.RunHeartbeat)
 	tw := tgworker.New(cfg, store)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go tw.Run(ctx)
+	go tw.RunHeartbeat(ctx, 5*time.Minute, 3)
 
 	// HTTP
 	handler := httpapi.New(ctx, cfg, store, tw, staticFS)

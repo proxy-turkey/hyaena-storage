@@ -273,11 +273,40 @@ func (sv *Server) uploadFinish(w http.ResponseWriter, r *http.Request) {
 		cleanupTmp(tmpDir)
 		return
 	}
+	// Çift finish (çift tıklama / yarış) aynı dosyayı iki kez Telegram'a
+	// yükletip eş mesajlar bırakır — token başına tek başlatmaya izin ver.
+	if !sv.tryStartFinish(token) {
+		cleanupTmp(tmpDir)
+		writeErr(w, http.StatusConflict, "Upload zaten başlatıldı")
+		return
+	}
 	// Arka plan upload'ı güvenli sarmalayıcıyla başlat: panic process'i
 	// çökertmesin ve hata dosyayı 'uploading'de takılı bırakmasın.
-	go sv.uploadSegmentsSafe(f.ID, tmpDir, segments, plan, f.Mime)
+	go func() {
+		defer sv.finishDone(token)
+		sv.uploadSegmentsSafe(f.ID, tmpDir, segments, plan, f.Mime)
+	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
+}
+
+// tryStartFinish, token için finish'i atomik olarak ilk kez işaretler.
+// İkinci ve sonraki çağrılar false döner.
+func (sv *Server) tryStartFinish(token string) bool {
+	sv.finishMu.Lock()
+	defer sv.finishMu.Unlock()
+	if _, ok := sv.finishStarted[token]; ok {
+		return false
+	}
+	sv.finishStarted[token] = struct{}{}
+	return true
+}
+
+// finishDone, finish işaretini kaldırır (retry iptal/temizliği için).
+func (sv *Server) finishDone(token string) {
+	sv.finishMu.Lock()
+	defer sv.finishMu.Unlock()
+	delete(sv.finishStarted, token)
 }
 
 // ---------- Upload status ----------
@@ -328,6 +357,7 @@ func (sv *Server) uploadCancel(w http.ResponseWriter, r *http.Request) {
 	if err == nil && f != nil && f.Status == "uploading" {
 		_ = sv.store.DeleteFile(f.ID)
 	}
+	sv.finishDone(token) // yarım kalmış bir finish işaretinin kilidini bırak
 	cleanupTmp(sv.fileTmpDir(token))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }

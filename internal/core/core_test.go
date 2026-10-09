@@ -1,6 +1,8 @@
 package core
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -128,5 +130,46 @@ func TestRateLimiter(t *testing.T) {
 	}
 	if !rl.Check("ip2") {
 		t.Error("farklı ip bağımsız olmalı")
+	}
+}
+
+func TestRateLimiterPrunesStaleKeys(t *testing.T) {
+	rl := NewRateLimiter(1, 1) // 1 istek / 1 sn
+	rl.Check("eski-ip")
+	if len(rl.hits) != 1 {
+		t.Fatalf("başlangıç: 1 anahtar beklenirdi, %d", len(rl.hits))
+	}
+	time.Sleep(1100 * time.Millisecond)
+	rl.Check("yeni-ip") // prune tetiklenmeli (pencere geçti)
+	if _, ok := rl.hits["eski-ip"]; ok {
+		t.Error("pencere dışı anahtar budanmamış — bellek sızıntısı")
+	}
+}
+
+func TestClientIPTrustedProxyOnly(t *testing.T) {
+	mk := func(remote, cip, xff string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		if cip != "" {
+			r.Header.Set("CF-Connecting-IP", cip)
+		}
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		return r
+	}
+
+	// CF ucundan geliyorsa: CF-Connecting-IP geçerli, spoof edilemez.
+	if got := ClientIP(mk("104.16.1.1:443", "1.2.3.4", "9.9.9.9")); got != "1.2.3.4" {
+		t.Errorf("CF ucundan CF-Connecting-IP = %q, want 1.2.3.4", got)
+	}
+	// CF ucundan, CF-Connecting-IP yoksa XFF ilk değeri.
+	if got := ClientIP(mk("172.64.0.5:80", "", "5.6.7.8, 10.0.0.1")); got != "5.6.7.8" {
+		t.Errorf("CF ucundan XFF = %q, want 5.6.7.8", got)
+	}
+	// Doğrudan bağlantı: başlıklar YOK SAYILIR, RemoteAddr esas alınır
+	// (aksi halde XFF sahtelemekle rate limit atlanırdı).
+	if got := ClientIP(mk("31.14.10.195:52100", "1.2.3.4", "9.9.9.9")); got != "31.14.10.195" {
+		t.Errorf("doğrudan bağlantı = %q, want RemoteAddr (31.14.10.195)", got)
 	}
 }

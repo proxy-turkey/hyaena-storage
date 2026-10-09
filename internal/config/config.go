@@ -35,6 +35,10 @@ type Settings struct {
 	Port int
 	RateLimitPerMin int
 
+	// MaxConcurrentDownloads: eşzamanlı indirme üst sınırı. İlk parça bellekte
+	// tutulduğu için (segment ≤ 20 MB) sınırsız eşzamanlılık OOM yapabilir.
+	MaxConcurrentDownloads int
+
 	// PublicBaseURL: küçük dosyaların paylaşım link tabanı (Cloudflare cache'li).
 	// Boşsa request origin'i kullanılır.
 	PublicBaseURL string
@@ -233,6 +237,7 @@ func Load(root string) (*Settings, error) {
 	s.Host = getStr("HOST", "", s.Host)
 	s.Port = getInt("PORT", s.Port)
 	s.RateLimitPerMin = getInt("RATE_LIMIT_PER_MIN", s.RateLimitPerMin)
+	s.MaxConcurrentDownloads = getInt("MAX_CONCURRENT_DOWNLOADS", 16)
 	s.DatabaseURL = getStr("DATABASE_URL", "", "")
 	s.TmpRoot = getStr("TMP_ROOT", "", s.TmpRoot)
 	s.PublicBaseURL = getStr("PUBLIC_BASE_URL", "", "")
