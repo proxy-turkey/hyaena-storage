@@ -196,7 +196,7 @@ func (sv *Server) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
 	cleanupTmp(sv.fileTmpDir(token))
 	// Cloudflare edge cache'ini temizle (silinen dosya erişilebilir kalmasın).
 	// Admin yanıtını bekletmesin — purge arka planda yapılır.
-	if sv.s.CFZoneID != "" && sv.s.CFAPIKey != "" {
+	if sv.s.CFZoneID != "" && (sv.s.CFAPIToken != "" || sv.s.CFAPIKey != "") {
 		base := "https://storage.hyaena.co.uk"
 		// İsim URL-encode edilir (açık purge isteğinin aynısı olmalı).
 		u1 := base + "/api/download/" + token + "/" + url.PathEscape(f.OriginalName)
