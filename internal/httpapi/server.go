@@ -143,10 +143,11 @@ func New(ctx context.Context, s *config.Settings, store *storage.Store, tw tgwor
 		api.With(sv.rateLimit).Get("/download/{token}", sv.downloadMeta)
 		api.With(sv.rateLimit).Get("/download/{token}/{name}", sv.downloadFile)
 
-		// admin auth (public) — login'e brute-force koruması için sıkı rate limit
-		api.With(sv.loginLimit).Post("/admin/login", sv.adminLogin)
-		api.Post("/admin/logout", sv.adminLogout)
-		api.Get("/admin/session", sv.adminSession)
+		// admin auth (public) — brute-force koruması + kanal guard'ı (login de
+		// şifresiz HTTP'den gelmemeli: parola ve cookie açık ağda sızar)
+		api.With(sv.adminChannelGuard, sv.loginLimit).Post("/admin/login", sv.adminLogin)
+		api.With(sv.adminChannelGuard).Post("/admin/logout", sv.adminLogout)
+		api.With(sv.adminChannelGuard).Get("/admin/session", sv.adminSession)
 
 		// admin korumalı
 		api.Group(func(a chi.Router) {
