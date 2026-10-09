@@ -17,40 +17,51 @@ export interface Env {
 
 const CACHEABLE = /^\/api\/download\/[^/]+\/[^/]+$/; // /api/download/{token}/{name}
 
-// ---- Dış sağlık izleme durumu (B-02 L3): cron 5 dk'da bir origin'i yoklar ----
-// Per-isolate globaldir (worker izoleleri bağımsız); en güncel durumu yansıtır.
+// ---- Dış sağlık izleme durumu (B-02 L3) ----
+// Workers Free planda cron slotu dolu olduğu için fırsatçı kontrol kullanılır:
+// gelen her istekte son kontrolden 5+ dk geçtiyse origin arka planda yoklanır.
+// Origin tamamen ölse bile dış monitör (UptimeRobot vb.) storage.hyaena.co.uk/health
+// izleyerek Worker'ın 502'sinden durumu görür.
 let healthState = {
   last_check: null as string | null,
   last_ok: null as string | null,
   consecutive_failures: 0,
 };
+let lastCheckAt = 0;
+
+async function probeOrigin(env: Env): Promise<void> {
+  const origin = env.ORIGIN_URL || "http://orfi.hyaena.qzz.io:8080";
+  lastCheckAt = Date.now();
+  try {
+    const r = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(10000) });
+    healthState.last_check = new Date().toISOString();
+    if (r.ok) {
+      if (healthState.consecutive_failures >= 3) {
+        console.log(`Origin KURTARDI: ${healthState.consecutive_failures} başarısızlık sonrası ${healthState.last_check}`);
+      }
+      healthState.last_ok = healthState.last_check;
+      healthState.consecutive_failures = 0;
+    } else {
+      healthState.consecutive_failures++;
+      console.error(`Origin sağlık kontrolü HTTP ${r.status} (${healthState.consecutive_failures} art arda)`);
+    }
+  } catch (e) {
+    healthState.last_check = new Date().toISOString();
+    healthState.consecutive_failures++;
+    console.error(`Origin sağlık kontrolü hatası: ${e} (${healthState.consecutive_failures} art arda)`);
+  }
+}
 
 export default {
-  async scheduled(_event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
-    const origin = env.ORIGIN_URL || "http://orfi.hyaena.qzz.io:8080";
-    try {
-      const r = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(10000) });
-      healthState.last_check = new Date().toISOString();
-      if (r.ok) {
-        healthState.last_ok = healthState.last_check;
-        if (healthState.consecutive_failures >= 3) {
-          console.log(`Origin KURTARDI: ${healthState.consecutive_failures} başarısızlık sonrası ${healthState.last_check}`);
-        }
-        healthState.consecutive_failures = 0;
-      } else {
-        healthState.consecutive_failures++;
-        console.error(`Origin sağlık kontrolü HTTP ${r.status} (${healthState.consecutive_failures} art arda)`);
-      }
-    } catch (e) {
-      healthState.last_check = new Date().toISOString();
-      healthState.consecutive_failures++;
-      console.error(`Origin sağlık kontrolü hatası: ${e} (${healthState.consecutive_failures} art arda)`);
-    }
-  },
-
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const origin = env.ORIGIN_URL || "http://orfi.hyaena.qzz.io:8080";
+
+    // fırsatçı sağlık kontrolü: son kontrolden 5 dk geçtiyse arka planda tetikle
+    if (Date.now() - lastCheckAt > 5 * 60 * 1000) {
+      lastCheckAt = Date.now(); // önceden işaretle: eşzamanlı istekler çift tetiklemesin
+      ctx.waitUntil(probeOrigin(env));
+    }
 
     // Origin tamamen ölse bile durumu dışarıdan görebilmek için (B-02 L3).
     // Bu uç nokta origin'e proxy edilmez — worker kendi belleğinden cevaplar.

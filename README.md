@@ -95,6 +95,29 @@ ssh root@orfi systemctl restart tgshare
 Worker üzerinden edge cache'lenir; 480 MB üstü linkler `direct.hyaena.co.uk`
 üzerinden Cloudflare'siz gider.
 
+## Deploy
+
+```bash
+./deploy.sh    # temiz git ağacı → test → derle → scp → health check → hata halinde otomatik geri alma
+```
+
+Kurallar: yalnızca commit'lenmiş kod deploy edilir; testler geçmeden binary
+üretilmez; sağlık kontrolü başarısızsa önceki sürüme otomatik dönülür.
+
+## Telegram hesap limitleri (B-07)
+
+Tek hesap, tek session: hesap kısıtlanırsa (flood/ban) tüm hizmet durur.
+
+- **İzleme:** admin paneli özetinde `floodwait_24h` (son 24 saatte FloodWait
+  sayısı) ve `floodwait_last_sec` görünür. Değer sürekli yükseliyorsa kanal
+  büyüme hızını veya `INTER_MESSAGE_SLEEP`'i artırın.
+- **Yedek hesap prosedürü (acil durum):** (1) yeni Telegram hesabında
+  `api_id/api_hash` alın; (2) servisi durdurup `session` dosyasını yedekleyin;
+  (3) `./tgshare --login` ile yeni hesapla giriş yapın; (4) kanal filosu yeni
+  hesaba aittir — eski kanallardaki dosyalar eski hesapla erişilebilir kalır,
+  bu yüzden hesap değişimini yalnızca zorunlu durumda yapın ve önce B-01
+  kapsamındaki yedeklemeyi güncelleyin.
+
 ## İşletimsel notlar
 
 - **Telegram heartbeat:** süreç her 5 dakikada canlı bir RPC atar; 3 üst üste
@@ -109,6 +132,14 @@ Worker üzerinden edge cache'lenir; 480 MB üstü linkler `direct.hyaena.co.uk`
   `RemoteAddr` esas alınır (spoof ile limit atlama kapalı).
 - **Worker deploy:** `cd worker && npx wrangler deploy` (cache anahtarı gelen
   istektir; hata yanıtları `no-store` ile negatif cache'lenmez).
+- **İzleme (B-02):** üç katman — heartbeat (kendini yeniler + sahibe Telegram
+  uyarısı), disk eşiği (%85'te günlük uyarı, `/health` içinde `disk_pct`),
+  Worker cron (5 dk'da bir `/health` yoklaması; durum
+  `https://storage.hyaena.co.uk/__health-status` ucundan okunur; bu URL'ye
+  ücretsiz bir UptimeRobot monitörü bağlanabilir).
+- **Admin erişimi (B-06):** admin API yalnızca Cloudflare (TLS) veya VPS
+  localhost'undan erişilebilir; doğrudan origin'den (HTTP) istekler 403 alır.
+  Geliştirme için `ADMIN_ALLOW_DIRECT=true`.
 
 ## API
 

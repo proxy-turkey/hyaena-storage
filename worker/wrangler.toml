@@ -12,8 +12,3 @@ CACHE_TTL = "2592000"  # 30 gün
 routes = [
   { pattern = "storage.hyaena.co.uk/*", zone_name = "hyaena.co.uk" }
 ]
-
-# Dış sağlık izleme (B-02): origin /health 5 dk'da bir yoklanır,
-# durum /__health-status ucundan okunur.
-[triggers]
-crons = ["*/5 * * * *"]
