@@ -3,9 +3,11 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -134,6 +136,16 @@ func New(ctx context.Context, s *config.Settings, store *storage.Store, tw tgwor
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Use(securityHeaders)
+	// QUIC/HTTP-3 reklamı: yalnızca direct (Cloudflare'sız) hostta — edge
+	// rotasındaki istemciler CF'nin kendi h3 advertisment'ını kullanır.
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(strings.ToLower(r.Host), "direct.") && s.Port > 0 {
+				w.Header().Set("Alt-Svc", fmt.Sprintf(`h3=":%d"; ma=86400`, s.Port))
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
 
 	r.Get("/health", sv.health)
 	// /bandwidth operatör telemetrisi: admin kimliği + kanal guardı arkasına

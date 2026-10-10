@@ -1,11 +1,12 @@
 module github.com/proxy-turkey/hyaena-storage
 
-go 1.25.12
+go 1.26.0
 
 require (
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/gotd/td v0.162.0
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/quic-go/quic-go v0.63.0
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/crypto v0.54.0
 	golang.org/x/text v0.40.0
@@ -34,6 +35,7 @@ require (
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ogen-go/ogen v1.23.0 // indirect
+	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect

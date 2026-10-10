@@ -4,9 +4,11 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"embed"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,6 +17,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/quic-go/quic-go/http3"
 
 	"github.com/proxy-turkey/hyaena-storage/internal/config"
 	"github.com/proxy-turkey/hyaena-storage/internal/core"
@@ -94,18 +98,49 @@ func main() {
 	// yavaş-okuyucu koruması download.go'da parça bazlı write deadline ile).
 	srv.ReadHeaderTimeout = 15 * time.Second
 	srv.IdleTimeout = 120 * time.Second
+	var h3s *http3.Server
 	go func() {
-		if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
-			log.Printf("Servis hazır: https://%s:%d (TLS)", cfg.Host, cfg.Port)
-			if err := srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Fatalf("HTTPS sunucusu: %v", err)
+		if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
+			log.Printf("Servis hazır: http://%s:%d", cfg.Host, cfg.Port)
+			log.Printf("Not: ilk çalıştırmada Telegram login (telefon + kod) terminalde istenir.")
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatalf("HTTP sunucusu: %v", err)
 			}
 			return
 		}
-		log.Printf("Servis hazır: http://%s:%d", cfg.Host, cfg.Port)
-		log.Printf("Not: ilk çalıştırmada Telegram login (telefon + kod) terminalde istenir.")
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("HTTP sunucusu: %v", err)
+		// QUIC/HTTP-3: TLS modunda aynı portta UDP paralel dinleyici — direct
+		// host büyük dosya indirmeleri QUIC ile çalışır. TCP/TLS de aynı portta
+		// yaşamaya devam eder (h3 bilmeyen istemciler için).
+		addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+		tcpLn, err := net.Listen("tcp", addr)
+		if err != nil {
+			log.Fatalf("TCP dinleyici: %v", err)
+		}
+		go func() {
+			log.Printf("Servis hazır: https://%s:%d (TCP/TLS)", cfg.Host, cfg.Port)
+			if err := srv.ServeTLS(tcpLn, cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatalf("HTTPS sunucusu: %v", err)
+			}
+		}()
+		udpAddr, err := net.ResolveUDPAddr("udp", addr)
+		if err != nil {
+			log.Fatalf("QUIC adres: %v", err)
+		}
+		udpConn, err := net.ListenUDP("udp", udpAddr)
+		if err != nil {
+			log.Printf("UYARI: HTTP/3 (UDP %d) açılamadı, yalnızca TCP: %v", cfg.Port, err)
+			return
+		}
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+		if err != nil {
+			log.Printf("UYARI: sertifika yüklenemedi, HTTP/3 kapalı: %v", err)
+			udpConn.Close()
+			return
+		}
+		h3s = &http3.Server{Handler: handler, TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}}, Addr: addr}
+		log.Printf("Servis hazır: https://%s:%d (UDP/QUIC — HTTP/3)", cfg.Host, cfg.Port)
+		if err := h3s.Serve(udpConn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("HTTP/3 sunucusu kapandı: %v", err)
 		}
 	}()
 
@@ -127,6 +162,9 @@ func main() {
 	shutdownCtx, sc := context.WithTimeout(context.Background(), 5*time.Second)
 	defer sc()
 	_ = srv.Shutdown(shutdownCtx)
+	if h3s != nil {
+		_ = h3s.Shutdown(shutdownCtx)
+	}
 	cancel()
 }
 
