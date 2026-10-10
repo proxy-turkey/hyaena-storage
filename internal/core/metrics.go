@@ -18,3 +18,13 @@ func DiskUsagePct(path string) (float64, error) {
 	}
 	return (float64(total-free) / float64(total)) * 100, nil
 }
+
+// DiskFreeBytes, path'in dosya sisteminde ayrıcalıksız kullanıcıya kalan
+// baytı döndürür — upload kabul kapısı (F-05) bunu parça yazmadan önce sınar.
+func DiskFreeBytes(path string) (uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	return st.Bavail * uint64(st.Bsize), nil
+}

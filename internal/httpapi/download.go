@@ -136,6 +136,19 @@ func (sv *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// F-01 savunma katmanı: indirme yanıtları asla betik/çerçeve çalıştırmaz.
+	w.Header().Set("Content-Security-Policy", "sandbox")
+	// F-07: edge TTL dosyanın kalan ömrünü aşamaz — Worker bu s-maxage'i
+	// onurlanır; süresiz dosyalarda 30 günlük üst sınır geçerli kalır.
+	cc := "public, s-maxage=2592000"
+	if f.ExpiresAt != nil && *f.ExpiresAt != "" {
+		if t, perr := time.Parse("2006-01-02 15:04:05", *f.ExpiresAt); perr == nil {
+			if rem := int(time.Until(t).Seconds()); rem >= 0 && rem < 2592000 {
+				cc = fmt.Sprintf("public, s-maxage=%d", rem)
+			}
+		}
+	}
+	w.Header().Set("Cache-Control", cc)
 	// NOT: Content-Length KASITLI olarak set edilmez. Handler flushWriter ile
 	// chunked stream yapar; Content-Length + chunked kombinasyonu Cloudflare
 	// Worker proxy'den geçerken body'nin kaybolmasına yol açar. (Parça kaybını
@@ -157,7 +170,19 @@ func (sv *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		fl.Flush()
 	}
 
+	// F-09: parça bazlı idle-write deadline — gövdeyi okumayan/damlatan
+	// istemci bu süre içinde hiç bayt almazsa bağlantı kesilir, dlSem slotu
+	// ve ilk segment belleği serbest kalır. ≥128 KiB/s aktif okuyucu düşmez.
+	rc := http.NewResponseController(w)
+	segBytes := int64(sv.s.SegmentBytes)
+	perPart := time.Duration(segBytes/(128*1024)) * time.Second
+	if perPart < 30*time.Second {
+		perPart = 30 * time.Second
+	}
+	renew := func() { _ = rc.SetWriteDeadline(time.Now().Add(perPart)) }
+
 	// ilk parça zaten bellekte; doğrudan yaz ve kalanları akıt
+	renew()
 	if _, err := fw.Write(first); err != nil {
 		return
 	}
@@ -165,6 +190,7 @@ func (sv *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		fl.Flush()
 	}
 	for _, p := range parts[1:] {
+		renew()
 		if err := sv.tw.DownloadSegment(r.Context(), p, fw); err != nil {
 			// akış başladıktan sonra status gönderilemez; bağlantıyı kes
 			log.Printf("DownloadSegment hatası (file=%d token=%s part=%d/%d): %v",
@@ -179,18 +205,16 @@ func (sv *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 
 // isInlineType, tarayıcının doğrudan gösterebildiği MIME tiplerini döndürür.
 // Video/resim/audio/PDF inline gösterilir; diğerleri indirme olarak davranır.
+// isInlineType: YALNIZCA betik çalıştıramayan tipler inline kalır (F-01).
+// image/svg+xml ve tüm text/* bilinçli olarak HARİÇTİR: SVG top-level
+// navigasyonda betik çalıştırır (stored XSS); text/html sniffing riski.
 func isInlineType(mime string) bool {
-	lower := strings.ToLower(mime)
-	switch {
-	case strings.HasPrefix(lower, "video/"):
-		return true
-	case strings.HasPrefix(lower, "image/"):
-		return true
-	case strings.HasPrefix(lower, "audio/"):
-		return true
-	case lower == "application/pdf":
-		return true
-	case strings.Contains(lower, "text/plain"):
+	lower := strings.ToLower(strings.TrimSpace(strings.SplitN(mime, ";", 2)[0]))
+	switch lower {
+	case "image/gif", "image/png", "image/jpeg", "image/webp", "image/bmp",
+		"video/mp4", "video/webm", "video/ogg",
+		"audio/mpeg", "audio/ogg", "audio/wav", "audio/webm",
+		"application/pdf":
 		return true
 	default:
 		return false

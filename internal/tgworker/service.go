@@ -160,6 +160,7 @@ func (s *Service) call(ctx context.Context, fn func() error) error {
 		}
 		wait, ok := tgerr.AsFloodWait(err)
 		if ok {
+			s.flood.record(wait) // B-07: admin FloodWatch istatistiği gerçek veriye dönüşür
 			wait += 5 * time.Second
 			if attempt >= 2 { // max 3 deneme (0,1,2)
 				return err

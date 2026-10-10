@@ -4,10 +4,10 @@ import "sync"
 
 // UploadProgress, bir dosyanın canlı upload ilerlemesi.
 type UploadProgress struct {
-	PartCount   int                `json:"part_count"`
-	SentBytes   int64              `json:"sent_bytes"`
-	TotalBytes  int64              `json:"total_bytes"`
-	SegProgress map[int]float64    `json:"segment_progress"`
+	PartCount   int             `json:"part_count"`
+	SentBytes   int64           `json:"sent_bytes"`
+	TotalBytes  int64           `json:"total_bytes"`
+	SegProgress map[int]float64 `json:"segment_progress"`
 }
 
 // ProgressStore, mutex'li upload ilerleme kaydı.

@@ -13,6 +13,7 @@
 export interface Env {
   ORIGIN_URL: string;
   CACHE_TTL: string; // saniye
+  ORIGIN_SECRET?: string; // Worker↔origin paylaşımlı sır (F-02)
 }
 
 const CACHEABLE = /^\/api\/download\/[^/]+\/[^/]+$/; // /api/download/{token}/{name}
@@ -33,7 +34,9 @@ async function probeOrigin(env: Env): Promise<void> {
   const origin = env.ORIGIN_URL || "http://orfi.hyaena.qzz.io:8080";
   lastCheckAt = Date.now();
   try {
-    const r = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(10000) });
+    const h = new Headers();
+    if (env.ORIGIN_SECRET) h.set("X-Origin-Secret", env.ORIGIN_SECRET);
+    const r = await fetch(`${origin}/health`, { headers: h, signal: AbortSignal.timeout(10000) });
     healthState.last_check = new Date().toISOString();
     if (r.ok) {
       if (healthState.consecutive_failures >= 3) {
@@ -76,8 +79,16 @@ export default {
     const isCacheable = CACHEABLE.test(url.pathname);
     const cache = caches.default;
 
+    // F-08: cache anahtarı token'a normalleştirilir — ad segmentinin her
+    // percent-encoding/sorgu varyantı AYNI girdiye düşer; purge'taki
+    // /api/download/{token} URL'i tüm varyantları kapsar.
+    let cacheKey = request;
     if (isCacheable) {
-      const cached = await cache.match(request);
+      const m = url.pathname.match(/^\/api\/download\/([^/]+)/);
+      if (m) {
+        cacheKey = new Request(`${url.origin}/api/download/${m[1]}`, { method: "GET" });
+      }
+      const cached = await cache.match(cacheKey);
       if (cached) {
         return cached;
       }
@@ -85,8 +96,20 @@ export default {
 
     // Origin'e proxy isteği. url.pathname percent-encoding'i korur (decode
     // etmez) — %20'li dosya adları origin'e HAM halde ulaşır.
+    // F-02: her alt istek Worker↔origin paylaşımlı sırrı taşır — origin,
+    // CF-aralığından gelen admin isteklerini ve ileri-başlı güvenini bu
+    // sabit-zamanlı sırla doğrular.
     const originUrl = origin + url.pathname + url.search;
-    const originReq = new Request(originUrl, request);
+    const originHeaders = new Headers(request.headers);
+    if (env.ORIGIN_SECRET) {
+      originHeaders.set("X-Origin-Secret", env.ORIGIN_SECRET);
+    }
+    const originReq = new Request(originUrl, {
+      method: request.method,
+      headers: originHeaders,
+      body: request.body,
+      redirect: "manual",
+    });
 
     let response: Response;
     try {
@@ -107,20 +130,25 @@ export default {
       });
     }
 
-    // Başarılı dosya yanıtını cache'le (200). Cache anahtarı = gelen istek;
-    // match de put da aynı URL'yi kullanır.
+    // Başarılı dosya yanıtını cache'le (200).
+    // F-07: TTL origin'in s-maxage'inden türetilir (edge, dosyanın kalan
+    // ömründen uzun tutamaz); başlık yoksa güvenli üst sınır (1 saat).
     if (isCacheable) {
+      const oc = response.headers.get("Cache-Control") || "";
+      const sm = oc.match(/(?:^|,\s*)s-maxage=(\d+)/);
+      const ttl = sm ? Number(sm[1]) : Math.min(Number(env.CACHE_TTL || "2592000"), 3600);
+      const cc = `public, max-age=${ttl}`;
       const clone = response.clone();
       const headers = new Headers(clone.headers);
-      headers.set("Cache-Control", `public, max-age=${env.CACHE_TTL || "2592000"}`);
+      headers.set("Cache-Control", cc);
       const cacheable = new Response(clone.body, {
         status: clone.status,
         statusText: clone.statusText,
         headers,
       });
-      ctx.waitUntil(cache.put(request, cacheable));
+      ctx.waitUntil(cache.put(cacheKey, cacheable));
       const outHeaders = new Headers(response.headers);
-      outHeaders.set("Cache-Control", `public, max-age=${env.CACHE_TTL || "2592000"}`);
+      outHeaders.set("Cache-Control", cc);
       return new Response(response.body, {
         status: response.status,
         statusText: response.statusText,

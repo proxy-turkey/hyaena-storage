@@ -1,9 +1,10 @@
 package httpapi
 
 import (
+	"crypto/subtle"
 	"encoding/json"
-	"net"
 	"io/fs"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -39,13 +40,17 @@ func (sv *Server) adminTokenCookie(r *http.Request) string {
 	return c.Value
 }
 
-// verifyAdmin, isteğin admin token'ını doğrular.
+// verifyAdmin, isteğin admin token'ını doğrular: MAC (kova+nonce) VE
+// sunucu-taraflı oturum kaydı — logout/iptal edilmiş çerez geçersizdir (F-06).
 func (sv *Server) verifyAdmin(r *http.Request) bool {
 	tok := sv.adminTokenCookie(r)
 	if tok == "" {
 		return false
 	}
-	return core.VerifyAdminToken(sv.s.TokenSecret(), sv.s.TokenTTLHours, tok, time.Now())
+	if !core.VerifyAdminToken(sv.s.TokenSecret(), sv.s.TokenTTLHours, tok, time.Now()) {
+		return false
+	}
+	return sv.adminSessionValid(core.AdminTokenSID(tok))
 }
 
 // requireAdmin, admin cookie'si olmayan istekleri 401 yapar.
@@ -62,7 +67,7 @@ func (sv *Server) requireAdmin(next http.Handler) http.Handler {
 // rateLimit, per-IP kayan pencere sınırı uygular (upload/download).
 func (sv *Server) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !sv.uploadLimiter.Check(core.ClientIP(r)) {
+		if !sv.uploadLimiter.Check(sv.clientIP(r)) {
 			writeErr(w, http.StatusTooManyRequests, "Çok fazla istek")
 			return
 		}
@@ -70,10 +75,16 @@ func (sv *Server) rateLimit(next http.Handler) http.Handler {
 	})
 }
 
-// loginLimit, admin login'e sıkı per-IP sınırı uygular (brute-force koruması).
+// loginLimit, admin login'e sıkı per-IP sınırı + global deneme bütçesi uygular
+// (F-02/F-11): IP rotasyonu / CF-aralığı header güveni aşılsa bile toplam
+// deneme hacmi sınırlı kalır.
 func (sv *Server) loginLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !sv.loginLimiter.Check(core.ClientIP(r)) {
+		if !sv.loginLimiter.Check(sv.clientIP(r)) {
+			writeErr(w, http.StatusTooManyRequests, "Çok fazla deneme, birazdan tekrar dene")
+			return
+		}
+		if sv.globalLoginLimiter != nil && !sv.globalLoginLimiter.Check("global") {
 			writeErr(w, http.StatusTooManyRequests, "Çok fazla deneme, birazdan tekrar dene")
 			return
 		}
@@ -97,12 +108,39 @@ func (sv *Server) adminChannelGuard(next http.Handler) http.Handler {
 			writeErr(w, http.StatusForbidden, "Yasak kanal")
 			return
 		}
-		if peer.IsLoopback() || core.IsCloudflareIP(peer) {
+		if peer.IsLoopback() {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// CF-aralığı peer'leri paylaşımlı egress'tir: herhangi bir CF müşterisi
+		// bu aralıklardan origin'e bağlanabilir. Kanal güveni artık Worker↔origin
+		// paylaşımlı sırra bağlanır (F-02); sır yoksa fail-closed.
+		if core.IsCloudflareIP(peer) {
+			if sv.s.OriginSecret == "" {
+				writeErr(w, http.StatusServiceUnavailable, "Origin secret yapılandırılmamış (ORIGIN_SECRET)")
+				return
+			}
+			if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Origin-Secret")), []byte(sv.s.OriginSecret)) == 1 {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
 		writeErr(w, http.StatusForbidden, "Admin paneli yalnızca https://storage.hyaena.co.uk üzerinden erişilebilir")
 	})
+}
+
+// clientIP, hız-limit anahtarını üretir (F-02/F-11): ileri başlıklar yalnızca
+// geçerli origin sırrı taşıyan CF-eşlerinden kabul edilir — CF-aralığındaki
+// herhangi bir saldırgan sahte CF-Connecting-IP ile limit anahtarını seçemez.
+// Değer IPv6'da /64 ile normalleştirilir (adres döndürme tek kova üretir).
+func (sv *Server) clientIP(r *http.Request) string {
+	peer := core.RemoteIP(r)
+	peerIP := net.ParseIP(peer)
+	if sv.s.OriginSecret != "" && peerIP != nil && core.IsCloudflareIP(peerIP) &&
+		subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Origin-Secret")), []byte(sv.s.OriginSecret)) == 1 {
+		return core.ClientIP(r)
+	}
+	return core.NormalizeIPKey(peer)
 }
 
 // mimeFileServer, embed FS'ten MIME türünü doğru ayarlayarak dosya servis eder.

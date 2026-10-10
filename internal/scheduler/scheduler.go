@@ -22,7 +22,7 @@ import (
 //   - her gün channelCreationHour'da günlük kanal oluşturur
 //   - her dakika süresi dolan dosyaları temizler (DB + Telegram mesajları)
 //   - her 15 dakikada sahipsiz geçici parça dizinlerini temizler
-func Start(hour int, tw *tgworker.Service, store *storage.Store, tmpRoot string) *cron.Cron {
+func Start(hour int, tw *tgworker.Service, store *storage.Store, tmpRoot string, purgeExpired func(token, name string)) *cron.Cron {
 	c := cron.New(cron.WithLocation(time.Local))
 
 	// günlük +1 kanal
@@ -39,14 +39,14 @@ func Start(hour int, tw *tgworker.Service, store *storage.Store, tmpRoot string)
 
 	// her dakika süresi dolan dosyaları temizle
 	if _, err := c.AddFunc("*/1 * * * *", func() {
-		expireFiles(context.Background(), tw, store)
+		expireFiles(context.Background(), tw, store, purgeExpired)
 	}); err != nil {
 		log.Printf("Cron kaydı başarısız (süre sonu): %v", err)
 	}
 
 	// her 15 dakikada sahipsiz geçici parça dizinlerini temizle (volume birikmesin)
 	if _, err := c.AddFunc("*/15 * * * *", func() {
-		sweepTmp(context.Background(), tmpRoot, store)
+		sweepTmp(context.Background(), tmpRoot, store, tw)
 	}); err != nil {
 		log.Printf("Cron kaydı başarısız (tmp temizlik): %v", err)
 	}
@@ -141,7 +141,7 @@ func refreshReferences(tw *tgworker.Service, store *storage.Store) {
 //  1. DB'de kaydı olmayan token dizinleri (silinen dosyanın kalıntısı)
 //  2. DB kaydı 'uploading' ama dizini eski (yarım kalmış upload) — >24 saat
 //  3. DB kaydı 'uploading' ama tmp dizini hiç yoksa (terk edilmiş) — kaydı da sil
-func sweepTmp(ctx context.Context, tmpRoot string, store *storage.Store) {
+func sweepTmp(ctx context.Context, tmpRoot string, store *storage.Store, tw *tgworker.Service) {
 	entries, err := os.ReadDir(tmpRoot)
 	if err != nil {
 		return
@@ -167,9 +167,22 @@ func sweepTmp(ctx context.Context, tmpRoot string, store *storage.Store) {
 			continue
 		}
 
-		// DB'de 'uploading' durumunda ama eski → yarım kalmış upload, temizle
+		// DB'de 'uploading' durumunda ama eski → yarım kalmış upload, temizle.
+		// F-14: satır düşürülmeden önce kayıtlı segment mesajları best-effort
+		// silinir — cascade msg_id'leri yok ettiği için sonrası mümkün değil.
 		if f.Status == "uploading" {
 			if fi, err := e.Info(); err == nil && time.Since(fi.ModTime()) > 24*time.Hour {
+				if tw != nil {
+					if parts, perr := store.GetParts(f.ID); perr == nil {
+						for _, p := range parts {
+							if p.TelegramMsgID != nil {
+								if derr := tw.DeleteSegmentMessage(context.Background(), p); derr != nil {
+									log.Printf("Sweep: segment mesajı silinemedi (file=%d part=%d): %v", f.ID, p.PartIndex, derr)
+								}
+							}
+						}
+					}
+				}
 				_ = os.RemoveAll(dirPath)
 				_ = store.DeleteFile(f.ID)
 				log.Printf("Yarım kalmış upload temizlendi: %s (%s)", f.OriginalName, e.Name())
@@ -179,7 +192,7 @@ func sweepTmp(ctx context.Context, tmpRoot string, store *storage.Store) {
 }
 
 // expireFiles, süresi dolmuş dosyaları bulur, Telegram mesajlarını siler ve DB'den kaldırır.
-func expireFiles(ctx context.Context, tw *tgworker.Service, store *storage.Store) {
+func expireFiles(ctx context.Context, tw *tgworker.Service, store *storage.Store, purgeExpired func(token, name string)) {
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 	files, err := store.ListExpiredFiles(now)
 	if err != nil {
@@ -188,18 +201,33 @@ func expireFiles(ctx context.Context, tw *tgworker.Service, store *storage.Store
 	}
 	for _, f := range files {
 		parts, err := store.GetParts(f.ID)
-		if err == nil {
-			for _, p := range parts {
-				if p.TelegramMsgID != nil && tw != nil {
-					if err := tw.DeleteSegmentMessage(ctx, p); err != nil {
-						log.Printf("Süreli dosya mesajı silinemedi (file=%d part=%d): %v", f.ID, p.PartIndex, err)
-					}
+		if err != nil {
+			// F-15: parçalar okunamadıysa satır düşürmek msg_id'leri yok eder —
+			// satırı koru, sonraki dakikalık sweep'te (idempotent) tekrar dene.
+			log.Printf("Süreli dosya parçaları okunamadı (id=%d): %v", f.ID, err)
+			continue
+		}
+		failed := 0
+		for _, p := range parts {
+			if p.TelegramMsgID != nil && tw != nil {
+				if err := tw.DeleteSegmentMessage(ctx, p); err != nil {
+					failed++
+					log.Printf("Süreli dosya mesajı silinemedi (file=%d part=%d): %v", f.ID, p.PartIndex, err)
 				}
 			}
+		}
+		// F-15: Telegram'dan silinemeyen içerik yetim kalmasın — DB satırı
+		// (ve msg_id kayıtları) yalnızca TÜM parçalar silindiğinde düşer.
+		if failed > 0 {
+			continue
 		}
 		if err := store.DeleteFile(f.ID); err != nil {
 			log.Printf("Süresi dolan dosya silinemedi (id=%d): %v", f.ID, err)
 			continue
+		}
+		// F-07: süre sonu = silme garantisi — edge cache'ten de düşür.
+		if purgeExpired != nil {
+			purgeExpired(f.Token, f.OriginalName)
 		}
 		log.Printf("Süresi dolan dosya silindi: %s (%s)", f.OriginalName, f.Token)
 	}

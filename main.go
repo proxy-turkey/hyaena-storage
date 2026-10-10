@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -74,11 +75,31 @@ func main() {
 	}
 
 	// günlük +1 kanal + süre sonu + tmp temizliği
-	sch := scheduler.Start(cfg.ChannelCreationHour, tw, store, cfg.TmpDir())
+	// F-07: süre dolan dosyalar edge cache'ten de düşer (purge callback).
+	sch := scheduler.Start(cfg.ChannelCreationHour, tw, store, cfg.TmpDir(), func(token, name string) {
+		base := cfg.PublicBaseURL
+		if base == "" {
+			base = "https://storage.hyaena.co.uk"
+		}
+		_ = httpapi.PurgeCacheFile(cfg, base+"/api/download/"+token+"/"+url.PathEscape(name))
+		_ = httpapi.PurgeCacheFile(cfg, base+"/api/download/"+token)
+	})
 	defer sch.Stop()
 
-	// HTTP sunucusunu başlat
+	// HTTP sunucusunu başlat.
+	// F-04: başlık okuma ve boşta bağlantı süreleri sınırlı (ReadTimeout/
+	// WriteTimeout KONMAZ — 100GB'lık indirme/yükleme akışlarını keser;
+	// yavaş-okuyucu koruması download.go'da parça bazlı write deadline ile).
+	srv.ReadHeaderTimeout = 15 * time.Second
+	srv.IdleTimeout = 120 * time.Second
 	go func() {
+		if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+			log.Printf("Servis hazır: https://%s:%d (TLS)", cfg.Host, cfg.Port)
+			if err := srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatalf("HTTPS sunucusu: %v", err)
+			}
+			return
+		}
 		log.Printf("Servis hazır: http://%s:%d", cfg.Host, cfg.Port)
 		log.Printf("Not: ilk çalıştırmada Telegram login (telefon + kod) terminalde istenir.")
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -198,4 +219,3 @@ func sweepOrphanTmp(tmpRoot string, store *storage.Store, maxAge time.Duration) 
 		}
 	}
 }
-

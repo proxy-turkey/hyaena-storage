@@ -3,6 +3,7 @@ package httpapi
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -21,6 +22,11 @@ func (sv *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tok := core.MakeAdminToken(sv.s.TokenSecret(), sv.s.TokenTTLHours, time.Now())
+	// F-06: her giriş benzersiz sid taşır; sid sunucu tarafında kayıtlıdır —
+	// logout oturumu sunucu tarafından geçersiz kılar.
+	if sid := core.AdminTokenSID(tok); sid != "" {
+		sv.adminSessionStore(sid, time.Now().Add(time.Duration(sv.s.TokenTTLHours)*time.Hour))
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sv.s.AdminCookieName,
 		Value:    tok,
@@ -33,7 +39,44 @@ func (sv *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// adminSessionStore, sid'yi son geçerlilik zamanıyla kaydeder ve süresi
+// dolmuş oturumları budar (F-06).
+func (sv *Server) adminSessionStore(sid string, expires time.Time) {
+	sv.adminMu.Lock()
+	defer sv.adminMu.Unlock()
+	now := time.Now()
+	for s, exp := range sv.adminSessions {
+		if now.After(exp) {
+			delete(sv.adminSessions, s)
+		}
+	}
+	sv.adminSessions[sid] = expires
+}
+
+// adminSessionValid, sid kayıtlı ve geçerli mi döndürür.
+func (sv *Server) adminSessionValid(sid string) bool {
+	if sid == "" {
+		return false
+	}
+	sv.adminMu.Lock()
+	defer sv.adminMu.Unlock()
+	exp, ok := sv.adminSessions[sid]
+	return ok && time.Now().Before(exp)
+}
+
+// adminSessionRevoke, oturumu sunucu tarafında geçersiz kılar (logout).
+func (sv *Server) adminSessionRevoke(sid string) {
+	sv.adminMu.Lock()
+	defer sv.adminMu.Unlock()
+	delete(sv.adminSessions, sid)
+}
+
 func (sv *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
+	// F-06: logout yalnızca tarayıcı çerezini değil, oturumun kendisini
+	// sunucu tarafında da geçersiz kılar.
+	if c, err := r.Cookie(sv.s.AdminCookieName); err == nil {
+		sv.adminSessionRevoke(core.AdminTokenSID(c.Value))
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sv.s.AdminCookieName,
 		Value:    "",
@@ -163,7 +206,7 @@ func (sv *Server) adminFiles(w http.ResponseWriter, r *http.Request) {
 			"parts":         partList,
 			// Boşluk/#/özel karakter içeren adlar linki kırmasın diye URL-encode edilir.
 			// Taban: boyut eşiğine göre Cloudflare'li veya Cloudflare'sız (bkz. downloadBase).
-			"download_url":  sv.downloadBase(f.Size) + "/api/download/" + f.Token + "/" + url.PathEscape(f.OriginalName),
+			"download_url": sv.downloadBase(f.Size) + "/api/download/" + f.Token + "/" + url.PathEscape(f.OriginalName),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": out, "total": total})
@@ -184,20 +227,37 @@ func (sv *Server) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "Dosya bulunamadı")
 		return
 	}
-	parts, _ := sv.store.GetParts(f.ID)
-	deleted := 0
+	parts, perr := sv.store.GetParts(f.ID)
+	if perr != nil {
+		// Parçalar okunamadıysa satır düşürmek msg_id'leri kurtarılamaz hale
+		// getirir (F-15): satırı koru, sonraki denemeye bırak.
+		writeErr(w, http.StatusInternalServerError, "Parçalar okunamadı, silme ertelendi")
+		return
+	}
+	failed := 0
 	for _, p := range parts {
 		if p.TelegramMsgID != nil && sv.tw != nil {
-			_ = sv.tw.DeleteSegmentMessage(r.Context(), p)
-			deleted++
+			if err := sv.tw.DeleteSegmentMessage(r.Context(), p); err != nil {
+				failed++
+				log.Printf("Admin silme: segment mesajı silinemedi (file=%d part=%d): %v", f.ID, p.PartIndex, err)
+			}
 		}
+	}
+	if failed > 0 {
+		// F-15: Telegram'dan silinemeyen içerik yetim kalmasın — satır korunur,
+		// admin hangi parçaların kaldığını görür ve tekrar deneyebilir.
+		writeErr(w, http.StatusConflict, "Bazı parçalar Telegram'dan silinemedi, dosya korunuyor")
+		return
 	}
 	_ = sv.store.DeleteFile(f.ID)
 	cleanupTmp(sv.fileTmpDir(token))
 	// Cloudflare edge cache'ini temizle (silinen dosya erişilebilir kalmasın).
 	// Admin yanıtını bekletmesin — purge arka planda yapılır.
 	if sv.s.CFZoneID != "" && (sv.s.CFAPIToken != "" || sv.s.CFAPIKey != "") {
-		base := "https://storage.hyaena.co.uk"
+		base := sv.s.PublicBaseURL
+		if base == "" {
+			base = "https://storage.hyaena.co.uk"
+		}
 		// İsim URL-encode edilir (açık purge isteğinin aynısı olmalı).
 		u1 := base + "/api/download/" + token + "/" + url.PathEscape(f.OriginalName)
 		u2 := base + "/api/download/" + token

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,6 +70,9 @@ func expiresAtFor(hours int) string {
 }
 
 func (sv *Server) uploadStart(w http.ResponseWriter, r *http.Request) {
+	// Metadata gövdesi asla büyük olmamalı: decode'dan ÖNCE üst sınır (F-04) —
+	// sınırsız JSON decode tek istekle süreci OOM eder.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body uploadStartBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "Geçersiz istek")
@@ -84,13 +88,7 @@ func (sv *Server) uploadStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("Dosya çok büyük (max %d byte)", sv.s.MaxUploadBytes))
 		return
 	}
-	mime := body.Mime
-	if mime == "" || len(mime) > 200 {
-		mime = "application/octet-stream"
-	}
-	if len(mime) > 200 {
-		mime = mime[:200]
-	}
+	mime := sanitizeMime(body.Mime)
 
 	// kanal filosu hazır mı? (tek seferlik arka plan garantisi)
 	sv.ensureFleet()
@@ -102,6 +100,16 @@ func (sv *Server) uploadStart(w http.ResponseWriter, r *http.Request) {
 	if len(chs) == 0 {
 		writeErr(w, http.StatusServiceUnavailable, "Henüz depolama kanalı yok, birazdan tekrar dene")
 		return
+	}
+
+	// Toplam in-flight tavanı (F-05): eşzamanlı 'uploading' ilan boyutlarının
+	// toplamı + yeni dosya tavanı aşamaz — tek dosya sınırı tek başına diski korumaz.
+	if sv.s.MaxInflightBytes > 0 {
+		inflight, ierr := sv.store.InflightBytes()
+		if ierr == nil && inflight+size > sv.s.MaxInflightBytes {
+			writeErr(w, http.StatusServiceUnavailable, "Sunucu upload kapasitesi dolu, birazdan tekrar dene")
+			return
+		}
 	}
 
 	token := core.MakeShareToken()
@@ -179,6 +187,12 @@ func (sv *Server) uploadPart(w http.ResponseWriter, r *http.Request) {
 		if expected > 0 && expected < maxPart {
 			maxPart = expected
 		}
+	}
+
+	// Serbest disk kapısı (F-05): parça + güvenlik payı kadar yer yoksa yazma.
+	if free, ferr := core.DiskFreeBytes(tmpDir); ferr == nil && free < uint64(maxPart)+(16<<20) {
+		writeErr(w, http.StatusInsufficientStorage, "Disk dolu")
+		return
 	}
 
 	path := segmentPath(tmpDir, index)
@@ -282,9 +296,13 @@ func (sv *Server) uploadFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	// Arka plan upload'ı güvenli sarmalayıcıyla başlat: panic process'i
 	// çökertmesin ve hata dosyayı 'uploading'de takılı bırakmasın.
+	// Bağlam iptal edilebilir (F-14): cancel, uçuştaki dağıtımı durdurur.
 	go func() {
 		defer sv.finishDone(token)
-		sv.uploadSegmentsSafe(f.ID, tmpDir, segments, plan, f.Mime)
+		upCtx, cancel := sv.registerUploadCancel(f.ID)
+		defer cancel()
+		defer sv.unregisterUploadCancel(f.ID)
+		sv.uploadSegmentsSafe(upCtx, f.ID, tmpDir, segments, plan, f.Mime)
 	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
@@ -336,11 +354,11 @@ func (sv *Server) uploadStatus(w http.ResponseWriter, r *http.Request) {
 		tgProgress = sv.tw.GetUploadStatus(f.ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":          f.Status,
-		"received_bytes":  received,
-		"part_count":      f.PartCount,
-		"done_parts":      f.DoneParts,
-		"error":           f.Error,
+		"status":            f.Status,
+		"received_bytes":    received,
+		"part_count":        f.PartCount,
+		"done_parts":        f.DoneParts,
+		"error":             f.Error,
 		"telegram_progress": tgProgress,
 	})
 }
@@ -355,6 +373,19 @@ func (sv *Server) uploadCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	f, err := sv.store.GetFileByToken(token)
 	if err == nil && f != nil && f.Status == "uploading" {
+		// F-14: satır düşmeden ÖNCE kayıtlı segmentlerin Telegram mesajları
+		// silinir (cascade msg_id'leri yok eder — sonrasında kurtarılamaz);
+		// ardından uçuştaki arka plan dağıtımı iptal edilir.
+		if parts, perr := sv.store.GetParts(f.ID); perr == nil && sv.tw != nil {
+			for _, p := range parts {
+				if p.TelegramMsgID != nil {
+					if derr := sv.tw.DeleteSegmentMessage(r.Context(), p); derr != nil {
+						log.Printf("İptal: segment mesajı silinemedi (file=%d part=%d): %v", f.ID, p.PartIndex, derr)
+					}
+				}
+			}
+		}
+		sv.cancelUploadSignal(f.ID)
 		_ = sv.store.DeleteFile(f.ID)
 	}
 	sv.finishDone(token) // yarım kalmış bir finish işaretinin kilidini bırak
@@ -365,7 +396,7 @@ func (sv *Server) uploadCancel(w http.ResponseWriter, r *http.Request) {
 // uploadSegmentsSafe, arka plan Telegram upload'ını panic-korumalı ve
 // hata-bilinçli çalıştırır. Panic process'i çökertmesin (Recoverer kapsamaz),
 // erken hata dosyayı 'uploading'de takılı bırakmasın.
-func (sv *Server) uploadSegmentsSafe(fileID int64, tmpDir string, segments []string, plan []int64, mime string) {
+func (sv *Server) uploadSegmentsSafe(ctx context.Context, fileID int64, tmpDir string, segments []string, plan []int64, mime string) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			log.Printf("Upload goroutine panic (file=%d): %v", fileID, rec)
@@ -374,12 +405,42 @@ func (sv *Server) uploadSegmentsSafe(fileID int64, tmpDir string, segments []str
 			}
 		}
 	}()
-	if err := sv.tw.UploadSegments(sv.ctx, fileID, tmpDir, segments, plan, mime); err != nil {
+	if err := sv.tw.UploadSegments(ctx, fileID, tmpDir, segments, plan, mime); err != nil {
 		// UploadSegments içeride parça hatasında SetFileFailed yapar; buraya
 		// sadece çok-erken hatalar (apiGuard, kanal yok) düşer.
 		log.Printf("Telegram upload hatası (file=%d): %v", fileID, err)
 		if f, gerr := sv.store.GetFileByID(fileID); gerr == nil && f != nil && f.Status == "uploading" {
 			_ = sv.store.SetFileFailed(fileID, err.Error())
 		}
+	}
+}
+
+// registerUploadCancel, uçuştaki arka plan upload'u için iptal edilebilir
+// bağlam kaydeder (F-14). Dönen cancel her durumda çağrılmalı.
+func (sv *Server) registerUploadCancel(fileID int64) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(sv.ctx)
+	sv.uploadMu.Lock()
+	sv.uploadCancels[fileID] = cancel
+	sv.uploadMu.Unlock()
+	return ctx, cancel
+}
+
+// unregisterUploadCancel, kaydı temizler (upload tamamlandı/hiba).
+func (sv *Server) unregisterUploadCancel(fileID int64) {
+	sv.uploadMu.Lock()
+	delete(sv.uploadCancels, fileID)
+	sv.uploadMu.Unlock()
+}
+
+// cancelUploadSignal, kayıtlı uçuşlu upload varsa iptal eder (F-14).
+func (sv *Server) cancelUploadSignal(fileID int64) {
+	sv.uploadMu.Lock()
+	cancel, ok := sv.uploadCancels[fileID]
+	if ok {
+		delete(sv.uploadCancels, fileID)
+	}
+	sv.uploadMu.Unlock()
+	if ok {
+		cancel()
 	}
 }

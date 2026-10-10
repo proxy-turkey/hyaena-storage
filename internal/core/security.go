@@ -11,9 +11,9 @@ import (
 	"time"
 	"unicode"
 
+	"golang.org/x/text/runes"
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
-	"golang.org/x/text/runes"
 )
 
 // shareTokenRe, paylaşım token'ı doğrulaması (Python TOKEN_RE birebir).
@@ -60,21 +60,53 @@ func adminBucket(now time.Time, ttlHours int) int64 {
 	return now.Unix() / int64(ttlHours*3600)
 }
 
-// MakeAdminToken, HMAC-SHA256 zaman-dilimli admin token üretir (Python birebir).
+// MakeAdminToken, oturum-başı nonce'lu HMAC-SHA256 admin token üretir:
+// b64url(sid) + "." + b64url(HMAC(secret, bucket || sid)). Aynı haftadaki
+// iki giriş artık BİREBİR AYNI çerez üretmez (F-06) ve sid, sunucu
+// tarafında iptal edilebilir tek oturum kimliğidir.
 func MakeAdminToken(secret []byte, ttlHours int, now time.Time) string {
-	bucket := adminBucket(now, ttlHours)
+	sid := make([]byte, 16)
+	if _, err := rand.Read(sid); err != nil {
+		panic("crypto/rand başarısız: " + err.Error())
+	}
 	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(fmt.Sprintf("%d", bucket)))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	mac.Write([]byte(fmt.Sprintf("%d", adminBucket(now, ttlHours))))
+	mac.Write(sid)
+	return base64.RawURLEncoding.EncodeToString(sid) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// VerifyAdminToken, token'ı sabit-zamanlı doğrular.
+// AdminTokenSID, token'dan oturum kimliğini (sid) çıkarır — iptal
+// listesinde arama için. Hatalı biçim boş döner.
+func AdminTokenSID(token string) string {
+	i := strings.IndexByte(token, '.')
+	if i <= 0 {
+		return ""
+	}
+	return token[:i]
+}
+
+// VerifyAdminToken, token'ı sabit-zamanlı doğrular: sid ayrıştırılır,
+// güncel kova üzerinden MAC yeniden hesaplanır (nonce kovaya bağlıdır).
 func VerifyAdminToken(secret []byte, ttlHours int, token string, now time.Time) bool {
 	if token == "" {
 		return false
 	}
-	expected := MakeAdminToken(secret, ttlHours, now)
-	return hmac.Equal([]byte(token), []byte(expected))
+	i := strings.IndexByte(token, '.')
+	if i <= 0 || i+1 >= len(token) {
+		return false
+	}
+	sid, err := base64.RawURLEncoding.DecodeString(token[:i])
+	if err != nil {
+		return false
+	}
+	got, err := base64.RawURLEncoding.DecodeString(token[i+1:])
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(fmt.Sprintf("%d", adminBucket(now, ttlHours))))
+	mac.Write(sid)
+	return hmac.Equal(got, mac.Sum(nil))
 }
 
 // SanitizeFilename, dosya adını güvenli ve evrensel uyumlu hale getirir.

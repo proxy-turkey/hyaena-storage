@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -19,9 +20,9 @@ import (
 
 // Server, HTTP handler ve paylaşılan durumu tutar.
 type Server struct {
-	s     *config.Settings
-	store *storage.Store
-	tw    tgworker.Worker
+	s      *config.Settings
+	store  *storage.Store
+	tw     tgworker.Worker
 	static fs.FS
 	ctx    context.Context // uygulama-ömürlü context (arka plan upload'ları için)
 
@@ -33,12 +34,29 @@ type Server struct {
 
 	// finishMu + finishStarted: aynı token için finish'in iki kez arka plan
 	// upload başlatmasını önler (çift tıklama / yarış → Telegram'da eş mesaj).
-	finishMu       sync.Mutex
-	finishStarted  map[string]struct{}
+	finishMu      sync.Mutex
+	finishStarted map[string]struct{}
 
-	adminLimiter *core.RateLimiter
+	// uploadCancels: fileID → uçuştaki arka plan upload'unun iptal işlevi
+	// (F-14) — cancel, dağıtımı durdurur ve iptal handler'ı çağırır.
+	uploadMu      sync.Mutex
+	uploadCancels map[int64]context.CancelFunc
+
+	// byURLSem: eşzamanlı by-url arka plan get sınırı (F-03).
+	byURLSem chan struct{}
+
+	// globalLoginLimiter: IP üstünden bağımsız global giriş bütçesi (F-02/F-11) —
+	// adres döndürme per-IP limiti aşsa bile toplam deneme sayısı sınırlı kalır.
+	globalLoginLimiter *core.RateLimiter
+
+	// adminSessions: sid → son geçerlilik (F-06) — logout sunucu tarafında
+	// oturumu iptal eder; kayıtlar süreleri dolunca budanır.
+	adminMu       sync.Mutex
+	adminSessions map[string]time.Time
+
+	adminLimiter  *core.RateLimiter
 	uploadLimiter *core.RateLimiter
-	loginLimiter *core.RateLimiter
+	loginLimiter  *core.RateLimiter
 }
 
 // securityHeaders, temel güvenlik başlıklarını tüm yanıtlara ekler.
@@ -93,26 +111,38 @@ func (sv *Server) ensureFleet() {
 // ctx: uygulama genelinde yaşayan context (arka plan upload görevleri için).
 func New(ctx context.Context, s *config.Settings, store *storage.Store, tw tgworker.Worker, static fs.FS) http.Handler {
 	sv := &Server{
-		s:            s,
-		store:        store,
-		tw:           tw,
-		static:       static,
-		ctx:          ctx,
+		s:             s,
+		store:         store,
+		tw:            tw,
+		static:        static,
+		ctx:           ctx,
 		finishStarted: map[string]struct{}{},
-		adminLimiter: core.NewRateLimiter(s.RateLimitPerMin, 60),
+		adminLimiter:  core.NewRateLimiter(s.RateLimitPerMin, 60),
 		uploadLimiter: core.NewRateLimiter(s.RateLimitPerMin, 60),
-		loginLimiter: core.NewRateLimiter(5, 60), // 5 login denemesi / dk
+		loginLimiter:  core.NewRateLimiter(5, 60), // 5 login denemesi / dk
 	}
 	if s.MaxConcurrentDownloads > 0 {
 		sv.dlSem = make(chan struct{}, s.MaxConcurrentDownloads)
 	}
+	if s.MaxByURLConcurrent > 0 {
+		sv.byURLSem = make(chan struct{}, s.MaxByURLConcurrent)
+	}
+	sv.uploadCancels = map[int64]context.CancelFunc{}
+	sv.globalLoginLimiter = core.NewRateLimiter(30, 60)
+	sv.adminSessions = map[string]time.Time{}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Use(securityHeaders)
 
 	r.Get("/health", sv.health)
-	r.Get("/bandwidth", sv.bandwidthPage)
+	// /bandwidth operatör telemetrisi: admin kimliği + kanal guardı arkasına
+	// taşındı ve hız sınırına bağlandı (F-12/F-13).
+	r.With(sv.rateLimit).Group(func(op chi.Router) {
+		op.Use(sv.adminChannelGuard)
+		op.Use(sv.requireAdmin)
+		op.Get("/bandwidth", sv.bandwidthPage)
+	})
 	r.Get("/", sv.index)
 	r.Get("/admin", sv.adminPage)
 

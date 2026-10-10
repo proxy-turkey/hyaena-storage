@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	gotdTgerr "github.com/gotd/td/tgerr"
 	"github.com/gotd/td/tg"
+	gotdTgerr "github.com/gotd/td/tgerr"
 )
 
 // B-08: tgworker paketi için birim testler — Telegram'a bağlanmadan

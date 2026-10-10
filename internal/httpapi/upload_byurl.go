@@ -119,6 +119,9 @@ func deriveName(nameHint, rawURL string) string {
 }
 
 func (sv *Server) uploadByURL(w http.ResponseWriter, r *http.Request) {
+	// Metadata gövdesi üst sınırı (F-04): 2048 baytluk URL kontrolü decode'dan
+	// SONRA çalışıyordu — büyük gövde önce RAM'e girerdi.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body byURLBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "Geçersiz istek")
@@ -171,9 +174,34 @@ func (sv *Server) uploadByURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// İndirme + parçalama + Telegram upload → ARKA PLANDA (tarayıcı isteği anında kapanır)
+	// F-05: toplam in-flight tavanı by-url girişinde de uygulanır.
+	if sv.s.MaxInflightBytes > 0 {
+		if inflight, ierr := sv.store.InflightBytes(); ierr == nil && inflight > sv.s.MaxInflightBytes {
+			cleanupTmp(tmpDir)
+			_ = sv.store.DeleteFile(fid)
+			writeErr(w, http.StatusServiceUnavailable, "Sunucu upload kapasitesi dolu, birazdan tekrar dene")
+			return
+		}
+	}
+	// F-03: eşzamanlı by-url get sınırı.
+	if sv.byURLSem != nil {
+		select {
+		case sv.byURLSem <- struct{}{}:
+			defer func() { <-sv.byURLSem }()
+		default:
+			cleanupTmp(tmpDir)
+			_ = sv.store.DeleteFile(fid)
+			writeErr(w, http.StatusServiceUnavailable, "Çok fazla eşzamanlı by-url işlemi, birazdan tekrar dene")
+			return
+		}
+	}
+	// İndirme + parçalama + Telegram upload → ARKA PLANDA (tarayıcı isteği anında kapanır).
+	// Bağlam iptal edilebilir (F-14): cancel uçuştaki get'i/dağıtımı durdurur.
 	go func() {
-		sv.downloadAndUpload(rawURL, name, token, tmpDir, fid, channelIDs)
+		upCtx, cancel := sv.registerUploadCancel(fid)
+		defer cancel()
+		defer sv.unregisterUploadCancel(fid)
+		sv.downloadAndUpload(upCtx, rawURL, name, token, tmpDir, fid, channelIDs)
 	}()
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -188,7 +216,7 @@ func (sv *Server) uploadByURL(w http.ResponseWriter, r *http.Request) {
 
 // downloadAndUpload, URL'den dosyayı indirir, parçalara böler ve Telegram'a yükler.
 // Arka plan goroutine'inde çalışır — hatalar DB'ye 'failed' olarak yazılır.
-func (sv *Server) downloadAndUpload(rawURL, name, token, tmpDir string, fid int64, channelIDs []int64) {
+func (sv *Server) downloadAndUpload(ctx context.Context, rawURL, name, token, tmpDir string, fid int64, channelIDs []int64) {
 	client := &http.Client{
 		Timeout:   30 * time.Minute,
 		Transport: &http.Transport{DialContext: ssrfDialContext},
@@ -205,7 +233,13 @@ func (sv *Server) downloadAndUpload(rawURL, name, token, tmpDir string, fid int6
 		cleanupTmp(tmpDir)
 	}
 
-	resp, err := client.Get(rawURL)
+	// İstek iptal bağlamına bağlanır: cancel anında gövde okumayı keser (F-14).
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		fail("Geçersiz URL")
+		return
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		fail(fmt.Sprintf("URL indirilemedi: %v", err))
 		return
@@ -221,13 +255,7 @@ func (sv *Server) downloadAndUpload(rawURL, name, token, tmpDir string, fid int6
 		fail("Dosya çok büyük")
 		return
 	}
-	mime := resp.Header.Get("Content-Type")
-	if mime == "" || len(mime) > 200 {
-		mime = "application/octet-stream"
-	}
-	if len(mime) > 200 {
-		mime = mime[:200]
-	}
+	mime := sanitizeMime(resp.Header.Get("Content-Type"))
 
 	// gerçek parça sayısı
 	pc := 1
@@ -239,9 +267,12 @@ func (sv *Server) downloadAndUpload(rawURL, name, token, tmpDir string, fid int6
 	_ = sv.store.UpdateFilePartCount(fid, pc)
 
 	// stream indir → parça dosyalarına yaz
+	// totalWritten: segment devirlerinde sıfırlanmayan KÜMÜLATİF sayaç (F-03) —
+	// Content-Length==-1 (chunked) yanıtlarda MaxUploadBytes akış ortasında zorlanır.
 	idx := 0
 	var out *os.File
 	written := int64(0)
+	totalWritten := int64(0)
 	buf := make([]byte, 512*1024)
 	for {
 		n, rerr := resp.Body.Read(buf)
@@ -249,6 +280,14 @@ func (sv *Server) downloadAndUpload(rawURL, name, token, tmpDir string, fid int6
 			chunk := buf[:n]
 			if total > 0 && written+int64(len(chunk)) > total {
 				chunk = chunk[:total-written]
+			}
+			totalWritten += int64(len(chunk))
+			if totalWritten > sv.s.MaxUploadBytes {
+				if out != nil {
+					out.Close()
+				}
+				fail("Dosya çok büyük")
+				return
 			}
 			if out == nil {
 				out, err = os.Create(segmentPath(tmpDir, idx))
@@ -319,7 +358,7 @@ func (sv *Server) downloadAndUpload(rawURL, name, token, tmpDir string, fid int6
 		fail("Telegram worker yok")
 		return
 	}
-	if err := sv.tw.UploadSegments(sv.ctx, fid, tmpDir, segments, plan, mime); err != nil {
+	if err := sv.tw.UploadSegments(ctx, fid, tmpDir, segments, plan, mime); err != nil {
 		// UploadSegments içeride parça hatasında SetFileFailed yapar; buraya
 		// sadece çok-erken hatalar (apiGuard, kanal yok) düşer — dosya takılmasın.
 		log.Printf("By-url Telegram upload hatası (file=%d): %v", fid, err)

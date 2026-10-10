@@ -14,11 +14,11 @@ func TestPartCount(t *testing.T) {
 		size int64
 		want int
 	}{
-		{seg * 4, 4},          // exact multiple
-		{seg*4 + 1, 5},        // remainder
-		{1000, 1},             // small file
-		{0, 1},                // empty
-		{seg*4 - 1, 4},        // just under
+		{seg * 4, 4},   // exact multiple
+		{seg*4 + 1, 5}, // remainder
+		{1000, 1},      // small file
+		{0, 1},         // empty
+		{seg*4 - 1, 4}, // just under
 	}
 	for _, c := range cases {
 		if got := PartCount(c.size, seg); got != c.want {
@@ -70,24 +70,24 @@ func TestShareToken(t *testing.T) {
 
 func TestSanitizeFilename(t *testing.T) {
 	cases := map[string]string{
-		"../../etc/passwd":     "etc_passwd",
-		"":                     "dosya",
-		"hoş dosya.bin":        "hos_dosya.bin",
-		"...":                  "dosya",
-		"rapor (final).pdf":    "rapor_(final).pdf",
-		"Soru?nasil.pdf":       "Soru_nasil.pdf",
-		"a/b.txt":              "a_b.txt",
-		"a\\b.txt":             "a_b.txt",
-		"#rapor.pdf":           "rapor.pdf",
-		"a  b c.txt":           "a_b_c.txt",
-		"şekerli çay.png":      "sekerli_cay.png",
-		"ÜNİVERSİTE.pdf":       "UNIVERSITE.pdf",
-		"data:image.txt":       "data_image.txt",
-		"..gizli.txt":          "gizli.txt",
-		"name*with?pipe|.bin":  "name_with_pipe_.bin",
-		"tab\tseparated.txt":   "tab_separated.txt",
-		"café résumé.docx":     "cafe_resume.docx",
-		"straße.txt":           "strasse.txt",
+		"../../etc/passwd":    "etc_passwd",
+		"":                    "dosya",
+		"hoş dosya.bin":       "hos_dosya.bin",
+		"...":                 "dosya",
+		"rapor (final).pdf":   "rapor_(final).pdf",
+		"Soru?nasil.pdf":      "Soru_nasil.pdf",
+		"a/b.txt":             "a_b.txt",
+		"a\\b.txt":            "a_b.txt",
+		"#rapor.pdf":          "rapor.pdf",
+		"a  b c.txt":          "a_b_c.txt",
+		"şekerli çay.png":     "sekerli_cay.png",
+		"ÜNİVERSİTE.pdf":      "UNIVERSITE.pdf",
+		"data:image.txt":      "data_image.txt",
+		"..gizli.txt":         "gizli.txt",
+		"name*with?pipe|.bin": "name_with_pipe_.bin",
+		"tab\tseparated.txt":  "tab_separated.txt",
+		"café résumé.docx":    "cafe_resume.docx",
+		"straße.txt":          "strasse.txt",
 	}
 	for src, want := range cases {
 		if got := SanitizeFilename(src); got != want {
@@ -171,5 +171,50 @@ func TestClientIPTrustedProxyOnly(t *testing.T) {
 	// (aksi halde XFF sahtelemekle rate limit atlanırdı).
 	if got := ClientIP(mk("31.14.10.195:52100", "1.2.3.4", "9.9.9.9")); got != "31.14.10.195" {
 		t.Errorf("doğrudan bağlantı = %q, want RemoteAddr (31.14.10.195)", got)
+	}
+}
+
+func TestAdminTokenNonceUniqueness(t *testing.T) {
+	secret := []byte("s")
+	now := time.Now()
+	a := MakeAdminToken(secret, 24, now)
+	b := MakeAdminToken(secret, 24, now)
+	if a == b {
+		t.Fatal("aynı kovadaki iki giriş birebir aynı token üretti (nonce yok)")
+	}
+	if !VerifyAdminToken(secret, 24, a, now) || !VerifyAdminToken(secret, 24, b, now) {
+		t.Fatal("nonce'lu tokenlar doğrulanamadı")
+	}
+	tampered := "AAAA." + a[strings.Index(a, ".")+1:]
+	if VerifyAdminToken(secret, 24, tampered, now) {
+		t.Fatal("taklit sid kabul edildi")
+	}
+	if AdminTokenSID(a) == "" || strings.Contains(AdminTokenSID(a), ".") {
+		t.Fatal("AdminTokenSID hatalı")
+	}
+}
+
+func TestNormalizeIPKeyIPv6Slash64(t *testing.T) {
+	a := NormalizeIPKey("2001:db8:aaaa:bbbb::1")
+	b := NormalizeIPKey("2001:db8:aaaa:bbbb::ffff")
+	if a != b {
+		t.Fatalf("aynı /64 farklı anahtar: %q vs %q", a, b)
+	}
+	if got := NormalizeIPKey("192.0.2.1"); got != "192.0.2.1" {
+		t.Fatalf("IPv4 kanonik değil: %q", got)
+	}
+	// rotasyonlu CF-Connecting-IP → tek kova (F-11 regresyonu)
+	r1 := httptest.NewRequest("GET", "/", nil)
+	r1.RemoteAddr = "104.16.0.1:443"
+	r1.Header.Set("CF-Connecting-IP", "2001:db8:aaaa:bbbb::1")
+	r2 := httptest.NewRequest("GET", "/", nil)
+	r2.RemoteAddr = "104.16.0.1:443"
+	r2.Header.Set("CF-Connecting-IP", "2001:db8:aaaa:bbbb::ffff")
+	rl := NewRateLimiter(1, 60)
+	if !rl.Check(ClientIP(r1)) {
+		t.Fatal("1. istek reddedildi")
+	}
+	if rl.Check(ClientIP(r2)) {
+		t.Fatal("aynı /64'den 2. istek kabul edildi — rotasyon hâlâ bypass")
 	}
 }

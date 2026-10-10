@@ -17,23 +17,41 @@ type Settings struct {
 	TwoFA           string
 	SessionFile     string
 
-	AdminPassword   string
-	AdminCookieName string
+	AdminPassword    string
+	AdminCookieName  string
 	AdminTokenSecret string
-	TokenTTLHours   int
+	TokenTTLHours    int
 
 	SegmentBytes      int64
 	MaxUploadBytes    int64
 	DownloadChunkSize int64
 	InterMessageSleep float64
 
-	BootstrapChannels int
-	ChannelIntervalSN float64
+	BootstrapChannels   int
+	ChannelIntervalSN   float64
 	ChannelCreationHour int
 
-	Host string
-	Port int
+	Host            string
+	Port            int
 	RateLimitPerMin int
+
+	// OriginSecret: Worker↔origin paylaşımlı gizli anahtar (F-02/F-10).
+	// CF-aralığından gelen admin istekleri ve ileri-başlı güveni bu
+	// sabit-zamanlı sır doğrulamasına bağlanır. Boşsa admin API CF yoluyla
+	// kapalıdır (fail-closed) — ADMIN_ALLOW_DIRECT=true geliştirme kaçamağı.
+	OriginSecret string
+
+	// MaxInflightBytes: eşzamanlı 'uploading' ilan boyutlarının toplam tavanı
+	// (F-05) + parça yazımından önce serbest disk kapısı.
+	MaxInflightBytes int64
+
+	// MaxByURLConcurrent: eşzamanlı by-url arka plan get sınırı (F-03).
+	MaxByURLConcurrent int
+
+	// TLS: ayarlıysa servis ListenAndServeTLS ile dinler (F-10) — Worker→origin
+	// bacağı https olur; 8080 düz HTTP büyük-dosya indirmesi için açık kalır.
+	TLSCertFile string
+	TLSKeyFile  string
 
 	// MaxConcurrentDownloads: eşzamanlı indirme üst sınırı. İlk parça bellekte
 	// tutulduğu için (segment ≤ 20 MB) sınırsız eşzamanlılık OOM yapabilir.
@@ -66,9 +84,9 @@ type Settings struct {
 	AdminAllowDirect bool
 
 	// Northflank metrics (egress izleme)
-	NFToken     string
-	NFProject   string
-	NFService   string
+	NFToken   string
+	NFProject string
+	NFService string
 
 	// türetilmiş
 	ProjectRoot string
@@ -77,19 +95,19 @@ type Settings struct {
 // Default settings varsayılanları.
 func Defaults() *Settings {
 	return &Settings{
-		AdminCookieName:   "tgshare_admin",
-		TokenTTLHours:     168,
-		SegmentBytes:      20 * 1024 * 1024,
-		MaxUploadBytes:    100 * 1024 * 1024 * 1024,
-		DownloadChunkSize: 512 * 1024,
-		InterMessageSleep: 1.0,
-		BootstrapChannels: 1,
-		ChannelIntervalSN: 90.0,
+		AdminCookieName:     "tgshare_admin",
+		TokenTTLHours:       24,
+		SegmentBytes:        20 * 1024 * 1024,
+		MaxUploadBytes:      100 * 1024 * 1024 * 1024,
+		DownloadChunkSize:   512 * 1024,
+		InterMessageSleep:   1.0,
+		BootstrapChannels:   1,
+		ChannelIntervalSN:   90.0,
 		ChannelCreationHour: 4,
-		Host:              "0.0.0.0", // container (Northflank) için; yerel test .env'de HOST=127.0.0.1
-		Port:              8000,
-		RateLimitPerMin:   20,
-		TmpRoot:           "data/tmp",
+		Host:                "0.0.0.0", // container (Northflank) için; yerel test .env'de HOST=127.0.0.1
+		Port:                8000,
+		RateLimitPerMin:     20,
+		TmpRoot:             "data/tmp",
 	}
 }
 
@@ -244,6 +262,11 @@ func Load(root string) (*Settings, error) {
 	s.Port = getInt("PORT", s.Port)
 	s.RateLimitPerMin = getInt("RATE_LIMIT_PER_MIN", s.RateLimitPerMin)
 	s.MaxConcurrentDownloads = getInt("MAX_CONCURRENT_DOWNLOADS", 16)
+	s.OriginSecret = getStr("ORIGIN_SECRET", "", "")
+	s.MaxInflightBytes = getInt64("MAX_INFLIGHT_BYTES", 4*1024*1024*1024)
+	s.MaxByURLConcurrent = getInt("MAX_BYURL_CONCURRENT", 4)
+	s.TLSCertFile = getStr("TLS_CERT_FILE", "", "")
+	s.TLSKeyFile = getStr("TLS_KEY_FILE", "", "")
 	s.DatabaseURL = getStr("DATABASE_URL", "", "")
 	s.TmpRoot = getStr("TMP_ROOT", "", s.TmpRoot)
 	s.PublicBaseURL = getStr("PUBLIC_BASE_URL", "", "")

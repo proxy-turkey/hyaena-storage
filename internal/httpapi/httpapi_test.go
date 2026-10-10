@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"time"
 	"context"
 	"encoding/json"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/proxy-turkey/hyaena-storage/internal/config"
 	"github.com/proxy-turkey/hyaena-storage/internal/storage"
@@ -40,7 +40,7 @@ func (s *stubWorker) WaitReady(ctx context.Context) error {
 }
 func (s *stubWorker) markReady() { s.readyOnce.Do(func() { close(s.ready) }) }
 
-func (s *stubWorker) EnsureFleet(ctx context.Context) error      { return nil }
+func (s *stubWorker) EnsureFleet(ctx context.Context) error        { return nil }
 func (s *stubWorker) EnsureDailyChannel(ctx context.Context) error { return nil }
 
 func (s *stubWorker) UploadSegments(ctx context.Context, fileID int64, tmpDir string, segmentPaths []string, channelIDs []int64, mime string) error {
@@ -198,9 +198,9 @@ func TestUploadFlow(t *testing.T) {
 		t.Fatalf("start = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 	var startResp struct {
-		Token      string `json:"token"`
-		PartCount  int    `json:"part_count"`
-		Name       string `json:"name"`
+		Token     string `json:"token"`
+		PartCount int    `json:"part_count"`
+		Name      string `json:"name"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &startResp)
 	if startResp.Token == "" || startResp.PartCount != 1 {
@@ -359,5 +359,61 @@ func TestLegacyRedirect(t *testing.T) {
 	}
 	if loc := rec.Header().Get("Location"); loc != "/api/download/tokennnnnnnnnnnnnnnnnnnn/name.bin" {
 		t.Errorf("Location = %q", loc)
+	}
+}
+
+// F-06: logout oturumu SUNUCU tarafında geçersiz kılar — eski çerez
+// yeniden oynatılamaz; her giriş benzersiz çerez üretir.
+func TestAdminLogoutRevokesSessionServerSide(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Defaults()
+	cfg.AdminPassword = "test-pass"
+	cfg.DatabaseURL = testDBURL()
+	if cfg.DatabaseURL == "" {
+		t.Skip("DATABASE_URL yok")
+	}
+	cfg.TmpRoot = filepath.Join(root, "data", "tmp")
+	store, _ := storage.Open(cfg.DBFile())
+	defer store.Close()
+	store.CreateChannel(-1001, 111, "Kanal", "2026-08-11")
+	sw := &stubWorker{ready: make(chan struct{})}
+	sw.markReady()
+	handler := New(context.Background(), cfg, store, sw, emptyFS{})
+
+	rec1 := doReq(t, handler, "POST", "/api/admin/login", strings.NewReader(`{"password":"test-pass"}`), nil)
+	var cookies []*http.Cookie
+	for _, c := range rec1.Header().Values("Set-Cookie") {
+		if p := strings.SplitN(c, ";", 2); len(p) == 2 {
+			kv := strings.SplitN(p[0], "=", 2)
+			cookies = append(cookies, &http.Cookie{Name: kv[0], Value: kv[1]})
+		}
+	}
+	if len(cookies) != 1 {
+		t.Fatalf("login çerez üretmedi: %d", len(cookies))
+	}
+	tok1 := cookies[0].Value
+
+	// ikinci giriş → farklı çerez (nonce)
+	rec2 := doReq(t, handler, "POST", "/api/admin/login", strings.NewReader(`{"password":"test-pass"}`), nil)
+	c2 := strings.SplitN(strings.Split(rec2.Header().Get("Set-Cookie"), ";")[0], "=", 2)
+	tok2 := c2[1]
+	if tok1 == tok2 {
+		t.Fatal("iki giriş aynı çerezi üretti (nonce yok)")
+	}
+
+	// her ikisi de geçerli
+	if rec := doReq(t, handler, "GET", "/api/admin/summary", nil, cookies); rec.Code != 200 {
+		t.Fatalf("oturum 1 geçersiz: %d", rec.Code)
+	}
+	// logout → oturum 1 sunucu tarafında iptal
+	if rec := doReq(t, handler, "POST", "/api/admin/logout", nil, cookies); rec.Code != 204 {
+		t.Fatalf("logout = %d", rec.Code)
+	}
+	if rec := doReq(t, handler, "GET", "/api/admin/summary", nil, cookies); rec.Code != 401 {
+		t.Fatalf("logout sonrası eski çerez kabul edildi: %d (F-06 iptal yok)", rec.Code)
+	}
+	// oturum 2 hâlâ geçerli (oturum-başı iptal)
+	if rec := doReq(t, handler, "GET", "/api/admin/summary", nil, []*http.Cookie{{Name: c2[0], Value: tok2}}); rec.Code != 200 {
+		t.Fatalf("bağımsız oturum 2 etkilendi: %d", rec.Code)
 	}
 }

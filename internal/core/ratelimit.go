@@ -124,15 +124,30 @@ func RemoteIP(r *http.Request) string {
 // üzerinden gelince sahtelenemez. Doğrudan origin'e (direct.hyaena.co.uk:8080)
 // bağlanan istemciler için başlıklar yok sayılır ve RemoteAddr esas alınır —
 // aksi halde XFF sahtelemekle per-IP rate limit atlanabilirdi.
+// Anahtar IPv6'da /64 ile normalleştirilir: adres döndürme limit geçersiz kılar.
 func ClientIP(r *http.Request) string {
 	peer := RemoteIP(r)
+	client := peer
 	if IsCloudflareIP(net.ParseIP(peer)) {
 		if cip := r.Header.Get("CF-Connecting-IP"); cip != "" {
-			return cip
-		}
-		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			return strings.TrimSpace(strings.Split(fwd, ",")[0])
+			client = cip
+		} else if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			client = strings.TrimSpace(strings.Split(fwd, ",")[0])
 		}
 	}
-	return peer
+	return NormalizeIPKey(client)
+}
+
+// NormalizeIPKey, hız-limit anahtarı için IP'yi normalleştirir (F-11):
+// IPv4 kanonik ondalık; IPv6 /64 maskelenir (tek tahsis = tek kova);
+// ayrıştırılamayan değer ham döner.
+func NormalizeIPKey(s string) string {
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return s
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String()
 }

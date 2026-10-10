@@ -176,3 +176,13 @@ func (s *Store) ListExpiredFiles(now string) ([]File, error) {
 	}
 	return out, rows.Err()
 }
+
+// InflightBytes, 'uploading' durumundaki dosyaların ilan edilen toplam
+// boyutunu döndürür — toplam kabul kapısı (F-05).
+func (s *Store) InflightBytes() (int64, error) {
+	var n int64
+	err := s.db.QueryRow(
+		"SELECT COALESCE(SUM(size),0) FROM files WHERE status='uploading'",
+	).Scan(&n)
+	return n, err
+}

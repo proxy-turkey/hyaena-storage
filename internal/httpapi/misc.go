@@ -28,9 +28,9 @@ func (sv *Server) appConfig(w http.ResponseWriter, r *http.Request) {
 		dir = pub
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"public_base_url":    pub,
-		"direct_base_url":    dir,
-		"size_threshold":     sv.s.DirectThresholdBytes,
+		"public_base_url": pub,
+		"direct_base_url": dir,
+		"size_threshold":  sv.s.DirectThresholdBytes,
 	})
 }
 

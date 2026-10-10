@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -136,11 +137,24 @@ func (sv *Server) collectBandwidth() bandwidthData {
 	return d
 }
 
-// bandwidthPage, /bandwidth sayfasını sunar.
+// bwCache: collectBandwidth sonucunun sunucu-taraflı 60sn önbelleği (F-13) —
+// anonim/istek hacmi upstream Northflank API çağrı hacmine çevrilemez.
+var bwMu sync.Mutex
+var bwCached bandwidthData
+var bwFetchedAt time.Time
+
+// bandwidthPage, /bandwidth sayfasını sunar (admin korumalı — server.go rotası).
 func (sv *Server) bandwidthPage(w http.ResponseWriter, r *http.Request) {
-	d := sv.collectBandwidth()
+	bwMu.Lock()
+	if time.Since(bwFetchedAt) > 60*time.Second {
+		bwCached = sv.collectBandwidth()
+		bwFetchedAt = time.Now()
+	}
+	d := bwCached
+	bwMu.Unlock()
 
 	if r.Header.Get("Accept") == "application/json" || r.URL.Query().Get("format") == "json" {
+		// F-12: operatör altyapı tanımlayıcıları yanıta giremez.
 		writeJSON(w, http.StatusOK, map[string]any{
 			"total_kb":     d.TotalKB,
 			"total_gb":     d.TotalGB,
@@ -148,8 +162,6 @@ func (sv *Server) bandwidthPage(w http.ResponseWriter, r *http.Request) {
 			"limit_gb":     d.LimitGB,
 			"used_percent": d.UsedPercent,
 			"fetched_at":   d.FetchedAt,
-			"project":      d.Project,
-			"service":      d.Service,
 		})
 		return
 	}
