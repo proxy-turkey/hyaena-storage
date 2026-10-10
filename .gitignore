@@ -16,3 +16,6 @@ worker/node_modules/
 worker/dist/
 worker/.wrangler/
 
+
+# Ajan hafızası — ALTYAPI DETAYI İÇERİR, ASLA PUSHLAMA (bkz. README)
+AGENTS.md
