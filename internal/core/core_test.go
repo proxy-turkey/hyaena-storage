@@ -169,8 +169,8 @@ func TestClientIPTrustedProxyOnly(t *testing.T) {
 	}
 	// Doğrudan bağlantı: başlıklar YOK SAYILIR, RemoteAddr esas alınır
 	// (aksi halde XFF sahtelemekle rate limit atlanırdı).
-	if got := ClientIP(mk("31.14.10.195:52100", "1.2.3.4", "9.9.9.9")); got != "31.14.10.195" {
-		t.Errorf("doğrudan bağlantı = %q, want RemoteAddr (31.14.10.195)", got)
+	if got := ClientIP(mk("203.0.113.10:52100", "1.2.3.4", "9.9.9.9")); got != "203.0.113.10" {
+		t.Errorf("doğrudan bağlantı = %q, want RemoteAddr (203.0.113.10)", got)
 	}
 }
 

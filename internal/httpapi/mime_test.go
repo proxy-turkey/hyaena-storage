@@ -46,7 +46,7 @@ func TestIsBlockedIPCGNAT(t *testing.T) {
 			t.Errorf("isBlockedIP(%s) = false, engellenmeli", s)
 		}
 	}
-	allowed := []string{"1.1.1.1", "31.14.10.195", "93.184.216.34"}
+	allowed := []string{"1.1.1.1", "203.0.113.10", "93.184.216.34"}
 	for _, s := range allowed {
 		if isBlockedIP(net.ParseIP(s)) {
 			t.Errorf("isBlockedIP(%s) = true, genel adres engellenmemeli", s)
