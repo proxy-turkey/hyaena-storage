@@ -75,24 +75,13 @@ export default {
       }, { headers: { "Cache-Control": "no-store" } });
     }
 
-    // Sadece dosya stream path'ini cache'le; diğerleri passthrough
-    const isCacheable = CACHEABLE.test(url.pathname);
-    const cache = caches.default;
-
-    // F-08: cache anahtarı token'a normalleştirilir — ad segmentinin her
-    // percent-encoding/sorgu varyantı AYNI girdiye düşer; purge'taki
-    // /api/download/{token} URL'i tüm varyantları kapsar.
-    let cacheKey = request;
-    if (isCacheable) {
-      const m = url.pathname.match(/^\/api\/download\/([^/]+)/);
-      if (m) {
-        cacheKey = new Request(`${url.origin}/api/download/${m[1]}`, { method: "GET" });
-      }
-      const cached = await cache.match(cacheKey);
-      if (cached) {
-        return cached;
-      }
-    }
+    // /api/download/* yalnızca proxy'lenir. Kenar önbelleği Cloudflare'in
+    // STANDART cache'idir (zone rule: cache=true + edge_ttl=respect_origin);
+    // Cache API katmanı bilinçli olarak KULLANILMAZ — zone purge Cache API
+    // girdilerini düşürmez (canlı doğrulandı), standart cache tek-URL purge
+    // ile güvenilir temizlenir. TTL'i origin belirler (s-maxage = kalan ömür;
+    // süresiz dosyada 24 saat üst sınırı) → süre sonu/silme hiçbir varyant
+    // URL'de TTL'den uzun yaşamaz.
 
     // Origin'e proxy isteği. url.pathname percent-encoding'i korur (decode
     // etmez) — %20'li dosya adları origin'e HAM halde ulaşır.
@@ -130,32 +119,8 @@ export default {
       });
     }
 
-    // Başarılı dosya yanıtını cache'le (200).
-    // F-07: TTL origin'in s-maxage'inden türetilir (edge, dosyanın kalan
-    // ömründen uzun tutamaz); başlık yoksa güvenli üst sınır (1 saat).
-    if (isCacheable) {
-      const oc = response.headers.get("Cache-Control") || "";
-      const sm = oc.match(/(?:^|,\s*)s-maxage=(\d+)/);
-      const ttl = sm ? Number(sm[1]) : Math.min(Number(env.CACHE_TTL || "2592000"), 3600);
-      const cc = `public, max-age=${ttl}`;
-      const clone = response.clone();
-      const headers = new Headers(clone.headers);
-      headers.set("Cache-Control", cc);
-      const cacheable = new Response(clone.body, {
-        status: clone.status,
-        statusText: clone.statusText,
-        headers,
-      });
-      ctx.waitUntil(cache.put(cacheKey, cacheable));
-      const outHeaders = new Headers(response.headers);
-      outHeaders.set("Cache-Control", cc);
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: outHeaders,
-      });
-    }
-
+    // Başarılı dosya yanıtı origin başlıklarıyla aynen geçer; önbellek TTL'i
+    // zone'un respect_origin kuralı üzerinden origin s-maxage'e bağlanır.
     return response;
   },
 };

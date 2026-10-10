@@ -5,7 +5,7 @@ workers_dev = false
 
 # Origin: orfi VPS (app 8080'de)
 [vars]
-ORIGIN_URL = "http://orfi.hyaena.qzz.io:8080"
+ORIGIN_URL = "https://direct.hyaena.co.uk:8444"
 CACHE_TTL = "2592000"  # 30 gün
 
 # Tüm domain Worker'dan geçer (index/upload/admin/download → orfi VPS)

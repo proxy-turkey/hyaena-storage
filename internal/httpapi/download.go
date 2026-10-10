@@ -140,10 +140,11 @@ func (sv *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "sandbox")
 	// F-07: edge TTL dosyanın kalan ömrünü aşamaz — Worker bu s-maxage'i
 	// onurlanır; süresiz dosyalarda 30 günlük üst sınır geçerli kalır.
-	cc := "public, s-maxage=2592000"
+	cc := "public, s-maxage=86400" // süresiz: admin silme varyant URL'lerde ≤24s bayatlıkla sınırlı
 	if f.ExpiresAt != nil && *f.ExpiresAt != "" {
 		if t, perr := time.Parse("2006-01-02 15:04:05", *f.ExpiresAt); perr == nil {
-			if rem := int(time.Until(t).Seconds()); rem >= 0 && rem < 2592000 {
+			// süreli dosya: TTL = kalan ömür → süre sonu edge'de kendiliğinden düşer
+			if rem := int(time.Until(t).Seconds()); rem >= 0 && rem < 30*24*3600 {
 				cc = fmt.Sprintf("public, s-maxage=%d", rem)
 			}
 		}
