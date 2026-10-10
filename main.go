@@ -43,7 +43,9 @@ func main() {
 		log.Fatalf("yapılandırma hatası: %v", err)
 	}
 	if cfg.AdminPassword == "" || cfg.AdminPassword == "degistir-ben" {
-		log.Println("UYARI: ADMIN_PASSWORD hâlâ varsayılan! .env'den değiştir.")
+		// Fail-closed: repo-kamuya açık varsayılan kimlik bilgisiyle servis
+		// açılmaz — anonim genel admin erişimi (reddedilen C06'nın sertleştirmesi).
+		log.Fatal("ADMIN_PASSWORD boş veya varsayılan ('degistir-ben') — .env'de güçlü bir değer ayarla ve yeniden başlat")
 	}
 
 	// DB

@@ -59,16 +59,14 @@ func (s *Store) AddPart(fileID int64, partIndex int, channelID *int64, msgID *in
 
 // CreatePendingParts, upload başlarken tüm parça kayıtlarını (sıra) oluşturur.
 func (s *Store) CreatePendingParts(fileID int64, partCount int) error {
-	for i := 0; i < partCount; i++ {
-		if _, err := s.db.Exec(
-			`INSERT INTO parts (file_id, part_index, size, status) VALUES ($1,$2,0,'pending')
-			 ON CONFLICT (file_id, part_index) DO NOTHING`,
-			fileID, i,
-		); err != nil {
-			return err
-		}
-	}
-	return nil
+	// Tek tur-atrip: generate_series ile tüm parça satırları INSERT edilir (C10) —
+	// 5120 sıralı INSERT yerine 1 sorgu; inflight tavanı (F-05) toplam satırı sınırlar.
+	_, err := s.db.Exec(
+		`INSERT INTO parts (file_id, part_index, status, size)
+		 SELECT $1, g, 'pending', 0 FROM generate_series(0, $2::bigint - 1) AS g`,
+		fileID, partCount,
+	)
+	return err
 }
 
 // UpdatePartReceived, tarayıcıdan inen parça boyutunu kaydeder (hâlâ pending).

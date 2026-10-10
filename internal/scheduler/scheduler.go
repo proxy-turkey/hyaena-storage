@@ -23,7 +23,9 @@ import (
 //   - her dakika süresi dolan dosyaları temizler (DB + Telegram mesajları)
 //   - her 15 dakikada sahipsiz geçici parça dizinlerini temizler
 func Start(hour int, tw *tgworker.Service, store *storage.Store, tmpRoot string, purgeExpired func(token, name string)) *cron.Cron {
-	c := cron.New(cron.WithLocation(time.Local))
+	// C20: aynı iş hâlâ çalışıyorsa yeni tetikleme atlanır — örtüşen dakikalık
+	// expiry koşuları global Telegram mutex kuyruğunda üst üste binemez.
+	c := cron.New(cron.WithLocation(time.Local), cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger)))
 
 	// günlük +1 kanal
 	expr := fmt.Sprintf("0 %d * * *", hour)
@@ -37,9 +39,12 @@ func Start(hour int, tw *tgworker.Service, store *storage.Store, tmpRoot string,
 		log.Printf("Cron kaydı başarısız (kanal): %v", err)
 	}
 
-	// her dakika süresi dolan dosyaları temizle
+	// her dakika süresi dolan dosyaları temizle (C20: koşu-başı 50sn bütçe —
+	// dakika aşılırsa kalan dosyalar sonraki sweep'te idempotent devam eder)
 	if _, err := c.AddFunc("*/1 * * * *", func() {
-		expireFiles(context.Background(), tw, store, purgeExpired)
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+		defer cancel()
+		expireFiles(ctx, tw, store, purgeExpired)
 	}); err != nil {
 		log.Printf("Cron kaydı başarısız (süre sonu): %v", err)
 	}
@@ -210,7 +215,10 @@ func expireFiles(ctx context.Context, tw *tgworker.Service, store *storage.Store
 		failed := 0
 		for _, p := range parts {
 			if p.TelegramMsgID != nil && tw != nil {
-				if err := tw.DeleteSegmentMessage(ctx, p); err != nil {
+				pctx, pcancel := context.WithTimeout(ctx, 25*time.Second)
+				err := tw.DeleteSegmentMessage(pctx, p)
+				pcancel()
+				if err != nil {
 					failed++
 					log.Printf("Süreli dosya mesajı silinemedi (file=%d part=%d): %v", f.ID, p.PartIndex, err)
 				}

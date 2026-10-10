@@ -1,6 +1,9 @@
 package httpapi
 
-import "testing"
+import (
+	"net"
+	"testing"
+)
 
 // F-01: yükleyici MIME'ı allowlist dışında octet-stream'e düşer; SVG asla
 // geçmez; inline listede SVG/text yok.
@@ -31,6 +34,22 @@ func TestIsInlineTypeRejectsActiveContent(t *testing.T) {
 	for _, m := range []string{"image/png", "video/mp4", "audio/mpeg", "application/pdf"} {
 		if !isInlineType(m) {
 			t.Errorf("isInlineType(%q) = false, güvenli tip inline olmalı", m)
+		}
+	}
+}
+
+// C08 sertleştirme: CGNAT/benchmark/reserved aralıkları artık engellenir.
+func TestIsBlockedIPCGNAT(t *testing.T) {
+	blocked := []string{"100.64.0.1", "100.100.100.100", "100.127.255.254", "192.0.0.1", "198.18.0.5", "240.0.0.1"}
+	for _, s := range blocked {
+		if !isBlockedIP(net.ParseIP(s)) {
+			t.Errorf("isBlockedIP(%s) = false, engellenmeli", s)
+		}
+	}
+	allowed := []string{"1.1.1.1", "31.14.10.195", "93.184.216.34"}
+	for _, s := range allowed {
+		if isBlockedIP(net.ParseIP(s)) {
+			t.Errorf("isBlockedIP(%s) = true, genel adres engellenmemeli", s)
 		}
 	}
 }

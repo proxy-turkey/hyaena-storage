@@ -26,15 +26,41 @@ type byURLBody struct {
 // knownExts, by-url isim türetmesinde uzantı korunacak tipler (Python birebir).
 var knownExts = []string{".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".txt", ".mp4", ".zip"}
 
+// blockedCIDRs, stdlib yüklemelerinin kapsamadığı IANA özel-kullanım
+// aralıkları (C08): RFC6598 CGNAT 100.64/10 (hosting iç ağları), NAT64
+// discard 192.0.0.0/24, benchmark 198.18/15, reserved 240/4.
+var blockedCIDRs = mustCIDRs([]string{
+	"100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "240.0.0.0/4",
+})
+
+func mustCIDRs(specs []string) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(specs))
+	for _, s := range specs {
+		if _, n, err := net.ParseCIDR(s); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // isBlockedIP, SSRF koruması: özel/loopback/link-local/yerel IP'leri reddeder.
 // IPv4-mapped IPv6 (::ffff:127.0.0.1) formu da kontrol edilir.
 func isBlockedIP(ip net.IP) bool {
 	if v4 := ip.To4(); v4 != nil {
-		return v4.IsPrivate() || v4.IsLoopback() || v4.IsLinkLocalUnicast() ||
-			v4.IsUnspecified() || v4.IsMulticast()
+		if v4.IsPrivate() || v4.IsLoopback() || v4.IsLinkLocalUnicast() ||
+			v4.IsUnspecified() || v4.IsMulticast() {
+			return true
+		}
+	} else if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+		ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalMulticast() {
+		return true
 	}
-	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
-		ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalMulticast()
+	for _, n := range blockedCIDRs {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // guardPublicURL, SSRF koruması: sadece genel http/https adresler.
