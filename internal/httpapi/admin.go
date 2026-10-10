@@ -264,6 +264,11 @@ func (sv *Server) adminDeleteFile(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			sv.purgeCacheFile(u1)
 			sv.purgeCacheFile(u2)
+			// Tek-URL purge bu zone'da girdi düşürmüyor (canlı doğrulandı);
+			// zone-geneli boşaltma silmenin edge'e kesin yansımasını sağlar.
+			if err := PurgeCacheEverything(sv.s); err != nil {
+				log.Printf("purge_everything hatası: %v", err)
+			}
 		}()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "parts_deleted": len(parts)})

@@ -56,3 +56,38 @@ func PurgeCacheFile(s *config.Settings, fileURL string) error {
 func (sv *Server) purgeCacheFile(fileURL string) {
 	_ = PurgeCacheFile(sv.s, fileURL)
 }
+
+// PurgeCacheEverything, zone'un TÜM edge cache'ini boşaltır. Tek-URL purge
+// bu zone'da girdileri düşürmüyor (canlı doğrulandı: CF her iki kimlikle
+// success:true dönerken girdi HIT olarak kaldı); purge_everything güvenilir.
+// Admin silme seyrek ve manuel olduğu için zone-geneli boşaltma kabul
+// edilebilir — süreli dosyalar zaten TTL=kalan-ömür ile kendiliğinden düşer.
+func PurgeCacheEverything(s *config.Settings) error {
+	if s.CFZoneID == "" || (s.CFAPIToken == "" && s.CFAPIKey == "") {
+		return nil
+	}
+	req, err := http.NewRequest("POST",
+		"https://api.cloudflare.com/client/v4/zones/"+s.CFZoneID+"/purge_cache",
+		bytes.NewReader([]byte(`{"purge_everything":true}`)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if s.CFAPIToken != "" {
+		req.Header.Set("Authorization", "Bearer "+s.CFAPIToken)
+	} else {
+		req.Header.Set("X-Auth-Email", s.CFAPIEmail)
+		req.Header.Set("X-Auth-Key", s.CFAPIKey)
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode == 200 {
+		log.Printf("Cloudflare cache purge_everything yapıldı")
+		return nil
+	}
+	return fmt.Errorf("purge_everything HTTP %d", resp.StatusCode)
+}
