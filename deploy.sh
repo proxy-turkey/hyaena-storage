@@ -48,10 +48,11 @@ echo "==> 5/6 Yeniden başlatma"
 ssh_run "systemctl restart tgshare"
 
 echo "==> 6/6 Sağlık kontrolü"
+RPORT=$(ssh_run "grep -oP '^PORT=\K[0-9]+' $REMOTE_DIR/.env 2>/dev/null" || echo 8080)
 OK=0
 for i in $(seq 1 10); do
   sleep 2
-  if ssh_run "curl -sf -m 5 http://127.0.0.1:8080/health" | grep -q '"ok":true'; then
+  if ssh_run "curl -skf -m 5 https://127.0.0.1:$RPORT/health 2>/dev/null || curl -sf -m 5 http://127.0.0.1:$RPORT/health" | grep -q '"ok":true'; then
     OK=1
     break
   fi
